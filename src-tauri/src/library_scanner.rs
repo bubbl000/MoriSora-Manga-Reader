@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -132,6 +133,53 @@ fn folder_has_comic_archives(folder: &Path) -> bool {
     false
 }
 
+fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let re = regex::Regex::new(r"(\d+)").unwrap();
+    let mut a_parts = re.find_iter(a);
+    let mut b_parts = re.find_iter(b);
+
+    let a_lower = a.to_ascii_lowercase();
+    let b_lower = b.to_ascii_lowercase();
+
+    if a_lower == b_lower {
+        return a.cmp(b);
+    }
+
+    let mut a_pos = 0;
+    let mut b_pos = 0;
+
+    loop {
+        let a_match = a_parts.next();
+        let b_match = b_parts.next();
+
+        match (a_match, b_match) {
+            (Some(am), Some(bm)) => {
+                let a_before = &a_lower[a_pos..am.start()];
+                let b_before = &b_lower[b_pos..bm.start()];
+
+                if a_before != b_before {
+                    return a_lower.cmp(&b_lower);
+                }
+
+                let a_num = am.as_str();
+                let b_num = bm.as_str();
+
+                if a_num.len() != b_num.len() {
+                    return a_num.len().cmp(&b_num.len());
+                }
+                match a_num.cmp(b_num) {
+                    Ordering::Equal => {}
+                    other => return other,
+                }
+
+                a_pos = am.end();
+                b_pos = bm.end();
+            }
+            _ => return a_lower.cmp(&b_lower),
+        }
+    }
+}
+
 pub fn get_folder_images(folder: &str) -> Vec<String> {
     let path = PathBuf::from(folder);
     let mut images = Vec::new();
@@ -150,6 +198,11 @@ pub fn get_folder_images(folder: &str) -> Vec<String> {
         }
     }
     
-    images.sort();
+    images.sort_by(|a, b| {
+        let filename_a = Path::new(a).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let filename_b = Path::new(b).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        natural_cmp(&filename_a, &filename_b)
+    });
+    
     images
 }
