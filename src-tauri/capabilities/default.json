@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for manga reader",
+  "local": true,
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:default",
+    "core:webview:allow-create-webview-window",
+    "shell:allow-open"
+  ]
+}
