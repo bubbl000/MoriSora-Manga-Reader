@@ -2,6 +2,8 @@
 
 mod archive_parser;
 mod database;
+mod file_operations;
+mod folder_manager;
 mod library_scanner;
 mod settings;
 
@@ -125,6 +127,84 @@ fn get_all_tags() -> Result<Vec<database::Tag>, String> {
     database::get_all_tags()
 }
 
+#[tauri::command]
+fn create_folder(parent_path: String, folder_name: String) -> folder_manager::FolderOperationResult {
+    folder_manager::create_folder(&parent_path, &folder_name)
+}
+
+#[tauri::command]
+fn rename_folder(old_path: String, new_name: String) -> folder_manager::FolderOperationResult {
+    folder_manager::rename_folder(&old_path, &new_name)
+}
+
+#[tauri::command]
+fn delete_folder(folder_path: String, force: bool) -> folder_manager::FolderOperationResult {
+    folder_manager::delete_folder(&folder_path, force)
+}
+
+#[tauri::command]
+fn copy_file_to_folder(source_path: String, target_folder: String) -> file_operations::FileOperationResult {
+    file_operations::copy_file_to_folder(&source_path, &target_folder)
+}
+
+#[tauri::command]
+fn move_file_to_folder(source_path: String, target_folder: String) -> file_operations::FileOperationResult {
+    file_operations::move_file_to_folder(&source_path, &target_folder)
+}
+
+#[tauri::command]
+fn delete_tag_by_name(tag_name: String) -> Result<(), String> {
+    database::delete_tag_by_name(&tag_name)
+}
+
+#[tauri::command]
+fn get_comics_by_tag(tag_name: String) -> Result<Vec<database::ComicMetadata>, String> {
+    database::get_comics_by_tag(&tag_name)
+}
+
+#[tauri::command]
+fn open_in_explorer(path: String) -> Result<(), String> {
+    file_operations::open_in_explorer(&path)
+}
+
+#[tauri::command]
+fn delete_file_or_folder(path: String) -> Result<String, String> {
+    file_operations::delete_file_or_folder(&path)
+}
+
+#[tauri::command]
+fn count_manga_in_folder(folder_path: String) -> Result<usize, String> {
+    let all_comics = database::get_all_comics().map_err(|e| format!("无法获取漫画列表: {}", e))?;
+    Ok(file_operations::count_manga_in_folder(&folder_path, &all_comics))
+}
+
+#[tauri::command]
+fn create_subfolder(parent_path: String, folder_name: String) -> Result<String, String> {
+    file_operations::create_subfolder(&parent_path, &folder_name)
+}
+
+#[tauri::command]
+fn get_all_subfolders(root_path: String) -> Result<Vec<String>, String> {
+    fn collect_folders(dir: &Path, result: &mut Vec<String>) -> Result<(), String> {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(s) = path.to_str() {
+                        result.push(s.to_string());
+                    }
+                    collect_folders(&path, result)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    let mut folders = Vec::new();
+    collect_folders(Path::new(&root_path), &mut folders)?;
+    Ok(folders)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -153,12 +233,26 @@ fn main() {
             remove_tag_from_comic,
             get_comic_tags,
             get_all_tags,
+            create_folder,
+            rename_folder,
+            delete_folder,
+            copy_file_to_folder,
+            move_file_to_folder,
+            delete_tag_by_name,
+            get_comics_by_tag,
+            open_in_explorer,
+            delete_file_or_folder,
+            count_manga_in_folder,
+            create_subfolder,
+            get_all_subfolders,
         ])
         .setup(|app| {
-            let main_window = app.get_webview_window("main").unwrap();
+            let main_window = app.get_webview_window("main")
+                .ok_or_else(|| "Failed to get main window".to_string())?;
             main_window.set_title("Manga Reader - 书库")?;
             if let Err(e) = database::init_database() {
                 eprintln!("数据库初始化失败: {}", e);
+                // Continue anyway - the app will try to init on first DB operation
             }
             Ok(())
         })

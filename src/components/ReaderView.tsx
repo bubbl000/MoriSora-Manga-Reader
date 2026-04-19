@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import * as pdfjsLib from 'pdfjs-dist'
@@ -23,7 +23,6 @@ interface ArchivePageInfo {
 function ReaderView() {
   const [currentPage, setCurrentPage] = useState(1)
   const [mangaTitle, setMangaTitle] = useState('')
-  const [mangaId, setMangaId] = useState('')
   const [mangaPath, setMangaPath] = useState('')
   const [sourceType, setSourceType] = useState('')
   const [archivePages, setArchivePages] = useState<ArchivePageInfo[]>([])
@@ -110,7 +109,7 @@ function ReaderView() {
       }
       console.log('[PDF] Canvas created')
 
-      const renderTask = page.render({ canvasContext: context, viewport })
+      const renderTask = page.render({ canvasContext: context, viewport, canvas })
       await renderTask.promise
       console.log('[PDF] Page rendered to canvas')
       
@@ -213,7 +212,6 @@ function ReaderView() {
 
     console.log('ReaderView parsed:', { id, title, path, type })
 
-    if (id) setMangaId(id)
     if (title) setMangaTitle(title)
     else setMangaTitle('未知漫画')
 

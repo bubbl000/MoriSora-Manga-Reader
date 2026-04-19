@@ -1,10 +1,7 @@
 use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::fs;
-
-const DATABASE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComicMetadata {
@@ -38,6 +35,7 @@ pub struct FavoriteEntry {
 pub struct Tag {
     pub id: Option<i64>,
     pub name: String,
+    pub count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,8 +45,24 @@ pub struct ComicTag {
     pub tag_id: i64,
 }
 
-lazy_static::lazy_static! {
-    static ref DB_INSTANCE: Mutex<Option<Connection>> = Mutex::new(None);
+fn get_database_path() -> PathBuf {
+    let app_data = if cfg!(target_os = "windows") {
+        std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string())
+    } else if cfg!(target_os = "macos") {
+        format!("{}/Library/Application Support", dirs::home_dir().unwrap_or_default().to_string_lossy())
+    } else {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .to_string_lossy()
+            .to_string()
+    };
+    
+    PathBuf::from(app_data).join("manga-reader").join("manga.db")
+}
+
+fn get_connection() -> Result<Connection, String> {
+    let db_path = get_database_path();
+    Connection::open(&db_path).map_err(|e| format!("无法打开数据库: {}", e))
 }
 
 pub fn init_database() -> Result<(), String> {
@@ -58,7 +72,7 @@ pub fn init_database() -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("无法创建数据库目录: {}", e))?;
     }
     
-    let conn = Connection::open(&db_path).map_err(|e| format!("无法打开数据库: {}", e))?;
+    let conn = get_connection()?;
     
     conn.execute_batch(
         "
@@ -109,54 +123,20 @@ pub fn init_database() -> Result<(), String> {
         ",
     ).map_err(|e| format!("无法创建表: {}", e))?;
     
-    let mut db_lock = DB_INSTANCE.lock().unwrap();
-    *db_lock = Some(conn);
-    
     Ok(())
-}
-
-fn get_database_path() -> PathBuf {
-    let app_data = if cfg!(target_os = "windows") {
-        std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string())
-    } else if cfg!(target_os = "macos") {
-        format!("{}/Library/Application Support", dirs::home_dir().unwrap_or_default().to_string_lossy())
-    } else {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .to_string_lossy()
-            .to_string()
-    };
-    
-    PathBuf::from(app_data).join("manga-reader").join("manga.db")
-}
-
-fn get_connection() -> Result<&'static mut Connection, String> {
-    let mut db_lock = DB_INSTANCE.lock().unwrap();
-    match db_lock.as_mut() {
-        Some(conn) => Ok(unsafe { &mut **(conn as *mut Connection) }),
-        None => {
-            init_database()?;
-            let conn = db_lock.as_mut().unwrap();
-            Ok(unsafe { &mut **(conn as *mut Connection) })
-        }
-    }
 }
 
 pub fn upsert_comic_metadata(comic: &ComicMetadata) -> Result<i64, String> {
     let conn = get_connection()?;
     
-    let stmt = "
-        INSERT INTO comic_metadata (path, title, source_type, page_count, last_opened, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-        ON CONFLICT(path) DO UPDATE SET
-            title = excluded.title,
-            source_type = excluded.source_type,
-            page_count = excluded.page_count,
-            updated_at = excluded.updated_at
-    ";
-    
     conn.execute(
-        stmt,
+        "INSERT INTO comic_metadata (path, title, source_type, page_count, last_opened, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(path) DO UPDATE SET
+             title = excluded.title,
+             source_type = excluded.source_type,
+             page_count = excluded.page_count,
+             updated_at = excluded.updated_at",
         params![
             comic.path,
             comic.title,
@@ -397,6 +377,7 @@ pub fn get_comic_tags(comic_id: i64) -> Result<Vec<Tag>, String> {
         Ok(Tag {
             id: Some(row.get(0)?),
             name: row.get(1)?,
+            count: 0,
         })
     }).map_err(|e| format!("无法查询标签数据: {}", e))?
      .filter_map(|r| r.ok())
@@ -409,17 +390,69 @@ pub fn get_all_tags() -> Result<Vec<Tag>, String> {
     let conn = get_connection()?;
     
     let mut stmt = conn.prepare(
-        "SELECT id, name FROM tags ORDER BY name ASC"
+        "SELECT t.id, t.name, COUNT(ct.comic_id) as count 
+         FROM tags t
+         LEFT JOIN comic_tags ct ON t.id = ct.tag_id
+         GROUP BY t.id, t.name
+         ORDER BY name ASC"
     ).map_err(|e| format!("无法准备查询语句: {}", e))?;
     
     let tags = stmt.query_map(params![], |row| {
         Ok(Tag {
             id: Some(row.get(0)?),
             name: row.get(1)?,
+            count: row.get(2)?,
         })
     }).map_err(|e| format!("无法查询标签数据: {}", e))?
      .filter_map(|r| r.ok())
      .collect();
     
     Ok(tags)
+}
+
+pub fn delete_tag_by_name(tag_name: &str) -> Result<(), String> {
+    let conn = get_connection()?;
+    
+    conn.execute(
+        "DELETE FROM comic_tags WHERE tag_id IN (SELECT id FROM tags WHERE name = ?1)",
+        params![tag_name],
+    ).map_err(|e| format!("无法删除标签关联: {}", e))?;
+    
+    conn.execute(
+        "DELETE FROM tags WHERE name = ?1",
+        params![tag_name],
+    ).map_err(|e| format!("无法删除标签: {}", e))?;
+    
+    Ok(())
+}
+
+pub fn get_comics_by_tag(tag_name: &str) -> Result<Vec<ComicMetadata>, String> {
+    let conn = get_connection()?;
+    
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.path, c.title, c.source_type, c.page_count, 
+                c.last_opened, c.created_at, c.updated_at 
+         FROM comic_metadata c
+         INNER JOIN comic_tags ct ON c.id = ct.comic_id
+         INNER JOIN tags t ON ct.tag_id = t.id
+         WHERE t.name = ?1
+         ORDER BY c.title ASC"
+    ).map_err(|e| format!("无法准备查询语句: {}", e))?;
+    
+    let comics = stmt.query_map(params![tag_name], |row| {
+        Ok(ComicMetadata {
+            id: Some(row.get(0)?),
+            path: row.get(1)?,
+            title: row.get(2)?,
+            source_type: row.get(3)?,
+            page_count: row.get(4)?,
+            last_opened: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    }).map_err(|e| format!("无法查询漫画数据: {}", e))?
+     .filter_map(|r| r.ok())
+     .collect();
+    
+    Ok(comics)
 }
