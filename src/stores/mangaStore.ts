@@ -1,6 +1,27 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { saveComicMetadata, ComicMetadata, ReadingProgress, Tag } from '../services/databaseService'
+
+// 全局拖拽文件回调
+let globalDropCallback: ((paths: string[]) => void) | null = null
+
+export function setDropCallback(cb: (paths: string[]) => void) {
+  globalDropCallback = cb
+}
+
+// 初始化拖拽事件监听（只调用一次）
+let dragDropInitialized = false
+export function initDragDropListener() {
+  if (dragDropInitialized) return
+  dragDropInitialized = true
+  
+  listen<string[]>('tauri://file-drop', (event) => {
+    if (globalDropCallback) {
+      globalDropCallback(event.payload)
+    }
+  })
+}
 
 export interface FolderNode {
   id: string

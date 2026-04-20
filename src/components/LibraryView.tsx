@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { useMangaStore, MangaItem, FolderNode } from '../stores/mangaStore'
+import { useMangaStore, MangaItem, FolderNode, setDropCallback, initDragDropListener } from '../stores/mangaStore'
 import SettingsDialog from './SettingsDialog'
 import {
   RxGear,
@@ -17,13 +17,25 @@ import { HiFunnel, HiTag, HiOutlineTag } from 'react-icons/hi2'
 import { invoke } from '@tauri-apps/api/core'
 
 // Folder tree node component
-function FolderTreeNode({ node, depth, onSelect }: { node: FolderNode; depth: number; onSelect: (path: string) => void }) {
+function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop }: {
+  node: FolderNode
+  depth: number
+  onSelect: (path: string) => void
+  onDragStart: (path: string, e: React.MouseEvent) => void
+  onDragOver: (path: string, e: React.DragEvent | React.MouseEvent) => void
+  onDrop: (targetPath: string) => void
+}) {
   const [isExpanded, setIsExpanded] = useState(node.isExpanded)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showCreateSubfolder, setShowCreateSubfolder] = useState(false)
   const [newSubfolderName, setNewSubfolderName] = useState('')
   const [deleteMangaCount, setDeleteMangaCount] = useState(0)
+  const [isDragOverFolder, setIsDragOverFolder] = useState(false)
+
+  useEffect(() => {
+    setIsExpanded(node.isExpanded)
+  }, [node.isExpanded])
 
   const handleContextMenu = async (e: React.MouseEvent) => {
     e.preventDefault()
@@ -71,6 +83,21 @@ function FolderTreeNode({ node, depth, onSelect }: { node: FolderNode; depth: nu
     useMangaStore.getState().scanAndLoad()
   }
 
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button === 0) {
+      onDragStart(node.path, e)
+    }
+  }
+
+  const handleMouseEnter = (e: React.MouseEvent) => {
+    onDragOver(node.path, e)
+    setIsDragOverFolder(true)
+  }
+
+  const handleMouseLeave = () => {
+    setIsDragOverFolder(false)
+  }
+
   const handleConfirmCreateSubfolder = async () => {
     if (!newSubfolderName.trim()) {
       setShowCreateSubfolder(false)
@@ -89,9 +116,10 @@ function FolderTreeNode({ node, depth, onSelect }: { node: FolderNode; depth: nu
   return (
     <>
       <div
+        data-folder-path={node.path}
         className={`flex items-center gap-1 py-1.5 px-2 cursor-pointer hover:bg-bg-hover transition-colors text-sm ${
           node.isSelected ? 'bg-bg-hover text-accent' : 'text-text-primary'
-        }`}
+        } ${isDragOverFolder ? 'bg-accent/10 border-l-2 border-accent' : ''}`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
         onClick={() => {
           if (node.children.length > 0) {
@@ -100,6 +128,9 @@ function FolderTreeNode({ node, depth, onSelect }: { node: FolderNode; depth: nu
           onSelect(node.path)
         }}
         onContextMenu={handleContextMenu}
+        onMouseDown={handleMouseDown}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
       >
         {node.children.length > 0 ? (
           isExpanded ? (
@@ -116,7 +147,15 @@ function FolderTreeNode({ node, depth, onSelect }: { node: FolderNode; depth: nu
       {isExpanded && node.children.length > 0 && (
         <div>
           {node.children.map((child) => (
-            <FolderTreeNode key={child.id} node={child} depth={depth + 1} onSelect={onSelect} />
+            <FolderTreeNode
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              onSelect={onSelect}
+              onDragStart={onDragStart}
+              onDragOver={onDragOver}
+              onDrop={onDrop}
+            />
           ))}
         </div>
       )}
@@ -229,10 +268,21 @@ function FolderTreeNode({ node, depth, onSelect }: { node: FolderNode; depth: nu
 }
 
 // Manga cover card component
-function MangaCard({ manga, onClick, isSelected }: { manga: MangaItem; onClick: () => void; isSelected: boolean }) {
+function MangaCard({ manga, onClick, isSelected, onDragStart }: {
+  manga: MangaItem
+  onClick: () => void
+  isSelected: boolean
+  onDragStart: (path: string, name: string, e: React.MouseEvent) => void
+}) {
   const coverSize = useMangaStore((s) => s.coverSize)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button === 0) {
+      onDragStart(manga.path, manga.title, e)
+    }
+  }
 
   const handleContextMenu = async (e: React.MouseEvent) => {
     e.preventDefault()
@@ -279,6 +329,7 @@ function MangaCard({ manga, onClick, isSelected }: { manga: MangaItem; onClick: 
         style={{ width: coverSize }}
         onClick={onClick}
         onContextMenu={handleContextMenu}
+        onMouseDown={handleMouseDown}
         onDoubleClick={() => {
           const label = `reader-${manga.id}-${Date.now()}`
           const url = `/#reader#${manga.id}#${encodeURIComponent(manga.title)}#${encodeURIComponent(manga.path)}#${manga.sourceType}`
@@ -419,6 +470,7 @@ function LibraryView() {
     removeTag,
     selectTag,
     loadAllTags,
+    libraryPaths,
   } = useMangaStore()
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
@@ -434,6 +486,36 @@ function LibraryView() {
   const [isResizingLeft, setIsResizingLeft] = useState(false)
   const [isResizingRight, setIsResizingRight] = useState(false)
   const [globalContextMenu, setGlobalContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const [showConflictDialog, setShowConflictDialog] = useState(false)
+  const [pendingDropFiles, setPendingDropFiles] = useState<string[]>([])
+  const [pendingTargetFolder, setPendingTargetFolder] = useState('')
+  const [conflictFileName, setConflictFileName] = useState('')
+
+  const [draggedFolderPath, setDraggedFolderPath] = useState<string | null>(null)
+  const [dragOverFolderPath, setDragOverFolderPath] = useState<string | null>(null)
+  const [draggedFolderName, setDraggedFolderName] = useState<string>('')
+  const [draggedMangaPath, setDraggedMangaPath] = useState<string | null>(null)
+  const [draggedMangaName, setDraggedMangaName] = useState<string>('')
+  const [dragPosition, setDragPosition] = useState<{ x: number; y: number } | null>(null)
+  const [dragIcon, setDragIcon] = useState<string>('📁')
+  const [isDragging, setIsDragging] = useState(false)
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null)
+  const isDraggingRef = useRef(false)
+  const draggedFolderPathRef = useRef<string | null>(null)
+  const draggedMangaPathRef = useRef<string | null>(null)
+  const dragOverFolderPathRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    draggedFolderPathRef.current = draggedFolderPath
+  }, [draggedFolderPath])
+
+  useEffect(() => {
+    draggedMangaPathRef.current = draggedMangaPath
+  }, [draggedMangaPath])
+
+  useEffect(() => {
+    dragOverFolderPathRef.current = dragOverFolderPath
+  }, [dragOverFolderPath])
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -543,36 +625,80 @@ function LibraryView() {
     { value: 'type', label: '按类型' },
   ]
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-  }
-
-  const handleFileDrop = async (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOverLibrary(false)
-
-    const files = Array.from(e.dataTransfer.files) as Array<File & { path?: string }>
-    const paths = useMangaStore.getState().libraryPaths
-
-    if (paths.length === 0) {
-      setStatusMessage('请先在设置中添加漫画库路径')
-      return
-    }
-
-    for (const file of files) {
-      if (file.path) {
-        const targetFolder = paths[0]
+  useEffect(() => {
+    initDragDropListener()
+    
+    setDropCallback(async (paths: string[]) => {
+      setIsDragOverLibrary(false)
+      if (libraryPaths.length === 0) {
+        setStatusMessage('请先在设置中添加漫画库路径')
+        return
+      }
+      
+      const targetFolder = libraryPaths[0]
+      const conflicts: string[] = []
+      const noConflicts: string[] = []
+      
+      for (const file of paths) {
         try {
-          const result = await invoke<any>('copy_file_to_folder', { sourcePath: file.path, targetFolder })
-          setStatusMessage(result.message)
-        } catch (err) {
-          setStatusMessage('文件导入失败')
+          const result = await invoke<any>('check_file_conflict', { sourcePath: file, targetFolder })
+          if (result.has_conflict) {
+            conflicts.push(file)
+          } else {
+            noConflicts.push(file)
+          }
+        } catch {
+          noConflicts.push(file)
         }
+      }
+      
+      if (noConflicts.length > 0) {
+        for (const file of noConflicts) {
+          try {
+            await invoke('copy_file_to_folder', { sourcePath: file, targetFolder })
+          } catch (err) {
+            console.error('复制文件失败:', err)
+          }
+        }
+      }
+      
+      if (conflicts.length > 0) {
+        const fileName = conflicts[0].split(/[\\/]/).pop() || conflicts[0]
+        setConflictFileName(fileName)
+        setPendingDropFiles(conflicts)
+        setPendingTargetFolder(targetFolder)
+        setShowConflictDialog(true)
+      } else if (noConflicts.length > 0) {
+        scanAndLoad()
+      }
+    })
+    
+    return () => {
+      setDropCallback(null)
+    }
+  }, [libraryPaths])
+
+  const handleConfirmCopyWithSuffix = async () => {
+    setShowConflictDialog(false)
+    for (const file of pendingDropFiles) {
+      try {
+        await invoke('copy_file_to_folder_with_suffix', { sourcePath: file, targetFolder: pendingTargetFolder })
+      } catch (err) {
+        console.error('复制文件失败:', err)
       }
     }
     scanAndLoad()
+  }
+
+  const handleCancelCopy = async () => {
+    setShowConflictDialog(false)
+    scanAndLoad()
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOverLibrary(true)
   }
 
   const handleTagSelect = (tagName: string) => {
@@ -589,18 +715,164 @@ function LibraryView() {
     }
   }
 
+  const handleFolderDragStart = (path: string, e: React.MouseEvent) => {
+    const name = path.split(/[\\/]/).pop() || path
+    setDraggedFolderPath(path)
+    setDraggedFolderName(name)
+    setDraggedMangaPath(null)
+    setDragIcon('📁')
+    dragStartRef.current = { x: e.clientX, y: e.clientY }
+    setIsDragging(false)
+    window.addEventListener('mousemove', handleDragMouseMove)
+    window.addEventListener('mouseup', handleGlobalMouseUp)
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = ''
+  }
+
+  const handleMangaDragStart = (path: string, name: string, e: React.MouseEvent) => {
+    setDraggedMangaPath(path)
+    setDraggedMangaName(name)
+    setDraggedFolderPath(null)
+    setDragIcon('📖')
+    dragStartRef.current = { x: e.clientX, y: e.clientY }
+    setIsDragging(false)
+    window.addEventListener('mousemove', handleDragMouseMove)
+    window.addEventListener('mouseup', handleGlobalMouseUp)
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = ''
+  }
+
+  const handleDragMouseMove = (e: MouseEvent) => {
+    if (dragStartRef.current) {
+      const dx = e.clientX - dragStartRef.current.x
+      const dy = e.clientY - dragStartRef.current.y
+      const distance = Math.sqrt(dx * dx + dy * dy)
+      if (distance > 5 && !isDraggingRef.current) {
+        setIsDragging(true)
+        isDraggingRef.current = true
+        document.body.style.cursor = 'move'
+      }
+    }
+    if (isDraggingRef.current) {
+      setDragPosition({ x: e.clientX + 12, y: e.clientY + 12 })
+
+      const el = document.elementFromPoint(e.clientX, e.clientY)
+      if (el) {
+        const folderEl = el.closest('[data-folder-path]')
+        if (folderEl) {
+          const targetPath = folderEl.getAttribute('data-folder-path')
+          if (targetPath) {
+            setDragOverFolderPath(targetPath)
+            dragOverFolderPathRef.current = targetPath
+          }
+        } else {
+          setDragOverFolderPath(null)
+          dragOverFolderPathRef.current = null
+        }
+      }
+    }
+  }
+
+  const handleGlobalMouseUp = useCallback(() => {
+    window.removeEventListener('mousemove', handleDragMouseMove)
+    window.removeEventListener('mouseup', handleGlobalMouseUp)
+    const draggedFolder = draggedFolderPathRef.current
+    const draggedManga = draggedMangaPathRef.current
+    const target = dragOverFolderPathRef.current
+    if (isDraggingRef.current && target) {
+      if (draggedFolder) {
+        handleFolderDrop(target)
+      } else if (draggedManga) {
+        handleMangaDrop(target)
+      }
+    } else {
+      setDraggedFolderPath(null)
+      setDraggedMangaPath(null)
+      setDragOverFolderPath(null)
+    }
+    setDragPosition(null)
+    setIsDragging(false)
+    isDraggingRef.current = false
+    dragStartRef.current = null
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+  }, [])
+
+  const handleFolderDragOver = (path: string, _e: React.DragEvent | React.MouseEvent) => {
+    setDragOverFolderPath(path)
+  }
+
+  const handleFolderDrop = async (targetPath: string) => {
+    const dragged = draggedFolderPathRef.current
+    if (!dragged) {
+      return
+    }
+
+    if (dragged === targetPath) {
+      setDraggedFolderPath(null)
+      setDragOverFolderPath(null)
+      return
+    }
+
+    if (targetPath.startsWith(dragged + '/') || targetPath === dragged) {
+      setDraggedFolderPath(null)
+      setDragOverFolderPath(null)
+      return
+    }
+
+    try {
+      await invoke('move_folder', { sourcePath: dragged, targetParentPath: targetPath })
+      useMangaStore.getState().scanAndLoad()
+    } catch (err) {
+      console.error('移动文件夹失败:', err)
+    } finally {
+      setDraggedFolderPath(null)
+      setDragOverFolderPath(null)
+    }
+  }
+
+  const handleMangaDrop = async (targetPath: string) => {
+    const mangaPath = draggedMangaPathRef.current
+    if (!mangaPath) {
+      return
+    }
+
+    try {
+      await invoke('move_file_to_folder', { sourcePath: mangaPath, targetFolder: targetPath })
+      useMangaStore.getState().scanAndLoad()
+    } catch (err) {
+      console.error('移动漫画文件失败:', err)
+    } finally {
+      setDraggedMangaPath(null)
+      setDragOverFolderPath(null)
+    }
+  }
+
   return (
-    <div
-      className="flex-1 flex overflow-hidden"
-      onContextMenu={handleGlobalContextMenu}
-      onDragOver={handleDragOver}
+    <>
+      <div
+        className="flex-1 flex overflow-hidden"
+        onContextMenu={handleGlobalContextMenu}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('text/plain')) {
+          e.preventDefault()
+          setIsDragOverLibrary(true)
+        }
+      }}
       onDragEnter={() => setIsDragOverLibrary(true)}
       onDragLeave={(e) => {
-        e.preventDefault()
-        e.stopPropagation()
-        setIsDragOverLibrary(false)
+        if (!e.dataTransfer.types.includes('text/plain')) {
+          e.preventDefault()
+          e.stopPropagation()
+          setIsDragOverLibrary(false)
+        }
       }}
-      onDrop={handleFileDrop}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes('text/plain')) {
+          e.preventDefault()
+          setIsDragOverLibrary(false)
+        }
+      }}
     >
       {isDragOverLibrary && (
         <div className="absolute inset-0 z-40 bg-accent bg-opacity-10 border-2 border-dashed border-accent flex items-center justify-center pointer-events-none">
@@ -699,7 +971,15 @@ function LibraryView() {
             <div className="flex-1 overflow-auto">
               {folderTree.length > 0 ? (
                 folderTree.map((node) => (
-                  <FolderTreeNode key={node.id} node={node} depth={0} onSelect={selectFolder} />
+                  <FolderTreeNode
+                    key={node.id}
+                    node={node}
+                    depth={0}
+                    onSelect={selectFolder}
+                    onDragStart={handleFolderDragStart}
+                    onDragOver={handleFolderDragOver}
+                    onDrop={handleFolderDrop}
+                  />
                 ))
               ) : (
                 <div className="p-4 text-center">
@@ -869,6 +1149,7 @@ function LibraryView() {
                       manga={manga}
                       onClick={() => selectManga(manga)}
                       isSelected={selectedManga?.id === manga.id}
+                      onDragStart={handleMangaDragStart}
                     />
                   ))}
                 </div>
@@ -1110,8 +1391,57 @@ function LibraryView() {
         </div>
       )}
 
+      {/* File Conflict Dialog */}
+      {showConflictDialog && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
+          <div className="bg-bg-panel border border-border-1 rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
+            <h3 className="text-sm font-medium text-text-primary mb-3">文件名称冲突</h3>
+            <p className="text-text-secondary text-xs mb-2">
+              目标文件夹中已存在同名文件：
+            </p>
+            <p className="text-accent text-xs mb-2 font-mono bg-bg-input px-2 py-1 rounded">
+              {conflictFileName}
+            </p>
+            <p className="text-text-muted text-xs mb-4">
+              是否自动添加后缀（如 _1, _2）后导入？
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={handleCancelCopy}
+                className="px-3 py-1.5 bg-bg-hover hover:bg-border-1 rounded text-text-secondary text-xs transition-colors"
+              >
+                取消（不导入）
+              </button>
+              <button
+                onClick={handleConfirmCopyWithSuffix}
+                className="px-3 py-1.5 bg-accent hover:bg-accent-hover rounded text-accent-text text-xs transition-colors"
+              >
+                自动添加后缀并导入
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <SettingsDialog isOpen={isSettingsOpen} onClose={handleSettingsClose} />
     </div>
+
+      {dragPosition && isDragging && (
+        <div
+          className="fixed z-[9999] pointer-events-none px-3 py-2 bg-bg-panel border-2 border-accent rounded-lg shadow-2xl flex items-center gap-2 transition-opacity duration-150"
+          style={{
+            left: dragPosition.x,
+            top: dragPosition.y,
+            transform: 'translate(-50%, -50%)',
+          }}
+        >
+          <span className="text-lg">{dragIcon}</span>
+          <span className="text-text-primary text-sm font-medium truncate max-w-40">
+            {draggedFolderName || draggedMangaName}
+          </span>
+        </div>
+      )}
+    </>
   )
 }
 

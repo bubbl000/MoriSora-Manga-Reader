@@ -111,6 +111,82 @@ pub struct FileOperationResult {
     pub target_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyWithConflictResult {
+    pub success: bool,
+    pub message: String,
+    pub target_path: String,
+    pub has_conflict: bool,
+}
+
+pub fn check_file_conflict(source_path: &str, target_folder: &str) -> Result<CopyWithConflictResult, String> {
+    let source = Path::new(source_path);
+    let target_dir = Path::new(target_folder);
+    
+    if !source.exists() {
+        return Err(format!("源文件不存在: {}", source_path));
+    }
+    
+    if !target_dir.exists() || !target_dir.is_dir() {
+        return Err(format!("目标文件夹不存在: {}", target_folder));
+    }
+    
+    let file_name = source.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    
+    let target_path = target_dir.join(&file_name);
+    
+    if target_path.exists() {
+        Ok(CopyWithConflictResult {
+            success: false,
+            message: format!("目标文件已存在: {}", file_name),
+            target_path: target_path.to_string_lossy().to_string(),
+            has_conflict: true,
+        })
+    } else {
+        Ok(CopyWithConflictResult {
+            success: true,
+            message: "无冲突".to_string(),
+            target_path: target_path.to_string_lossy().to_string(),
+            has_conflict: false,
+        })
+    }
+}
+
+pub fn copy_file_to_folder_with_suffix(source_path: &str, target_folder: &str) -> Result<String, String> {
+    let source = Path::new(source_path);
+    let target_dir = Path::new(target_folder);
+    
+    if !source.exists() {
+        return Err(format!("源文件不存在: {}", source_path));
+    }
+    
+    if !target_dir.exists() || !target_dir.is_dir() {
+        return Err(format!("目标文件夹不存在: {}", target_folder));
+    }
+    
+    let file_name = source.file_stem()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let extension = source.extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    
+    let mut target_path = target_dir.join(format!("{}{}", file_name, extension));
+    let mut counter = 1;
+    
+    while target_path.exists() {
+        target_path = target_dir.join(format!("{}{}{}", file_name, counter, extension));
+        counter += 1;
+    }
+    
+    fs::copy(source, &target_path)
+        .map_err(|e| format!("无法复制文件: {}", e))?;
+    
+    Ok(target_path.to_string_lossy().to_string())
+}
+
 pub fn copy_file_to_folder(source_path: &str, target_folder: &str) -> FileOperationResult {
     let source = Path::new(source_path);
     let target_dir = Path::new(target_folder);

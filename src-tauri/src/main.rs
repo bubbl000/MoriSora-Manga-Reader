@@ -7,7 +7,7 @@ mod folder_manager;
 mod library_scanner;
 mod settings;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use std::fs;
 use std::path::Path;
 
@@ -184,6 +184,36 @@ fn create_subfolder(parent_path: String, folder_name: String) -> Result<String, 
 }
 
 #[tauri::command]
+fn check_file_conflict(source_path: String, target_folder: String) -> Result<file_operations::CopyWithConflictResult, String> {
+    file_operations::check_file_conflict(&source_path, &target_folder)
+}
+
+#[tauri::command]
+fn copy_file_to_folder_with_suffix(source_path: String, target_folder: String) -> Result<String, String> {
+    file_operations::copy_file_to_folder_with_suffix(&source_path, &target_folder)
+}
+
+#[tauri::command]
+fn move_folder(source_path: String, target_parent_path: String) -> Result<String, String> {
+    let source = Path::new(&source_path);
+    if !source.exists() || !source.is_dir() {
+        return Err("源文件夹不存在".to_string());
+    }
+    let target_parent = Path::new(&target_parent_path);
+    if !target_parent.exists() || !target_parent.is_dir() {
+        return Err("目标父文件夹不存在".to_string());
+    }
+    let folder_name = source.file_name().unwrap().to_string_lossy().to_string();
+    let target_path = target_parent.join(&folder_name);
+    if target_path.exists() {
+        return Err("目标文件夹已存在".to_string());
+    }
+    fs::rename(source, &target_path)
+        .map_err(|e| format!("移动文件夹失败: {}", e))?;
+    Ok(target_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 fn get_all_subfolders(root_path: String) -> Result<Vec<String>, String> {
     fn collect_folders(dir: &Path, result: &mut Vec<String>) -> Result<(), String> {
         if let Ok(entries) = fs::read_dir(dir) {
@@ -245,14 +275,32 @@ fn main() {
             count_manga_in_folder,
             create_subfolder,
             get_all_subfolders,
+            check_file_conflict,
+            copy_file_to_folder_with_suffix,
+            move_folder,
         ])
         .setup(|app| {
             let main_window = app.get_webview_window("main")
                 .ok_or_else(|| "Failed to get main window".to_string())?;
             main_window.set_title("Manga Reader - 书库")?;
+            
+            // 设置拖拽事件监听
+            let app_handle = app.handle().clone();
+            main_window.on_window_event(move |event| {
+                if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) = event {
+                    let paths_str: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+                    let _ = app_handle.emit("tauri://file-drop", &paths_str);
+                }
+                if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Enter { paths, position }) = event {
+                    let _ = app_handle.emit("tauri://file-drop-enter", ());
+                }
+                if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Leave) = event {
+                    let _ = app_handle.emit("tauri://file-drop-leave", ());
+                }
+            });
+            
             if let Err(e) = database::init_database() {
                 eprintln!("数据库初始化失败: {}", e);
-                // Continue anyway - the app will try to init on first DB operation
             }
             Ok(())
         })
