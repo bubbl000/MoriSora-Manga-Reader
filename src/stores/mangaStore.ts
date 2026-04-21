@@ -474,6 +474,20 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
     set({ selectedManga: manga })
     if (manga) {
       await get().loadMangaTags(manga)
+      try {
+        const comics = await invoke<ComicMetadata[]>('get_all_comics_metadata')
+        const comic = comics.find(c => c.path === manga.path)
+        if (comic) {
+          const updatedManga = {
+            ...manga,
+            addedDate: comic.created_at || manga.addedDate,
+            lastOpened: comic.last_opened || manga.lastOpened,
+          }
+          set({ selectedManga: updatedManga })
+        }
+      } catch (e) {
+        console.error('加载漫画元数据失败:', e)
+      }
     } else {
       set({ mangaTags: [] })
     }

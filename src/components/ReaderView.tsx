@@ -195,6 +195,19 @@ function ReaderView() {
     return 1
   }, [])
 
+  const handleRestoreProgress = useCallback(async () => {
+    const savedPage = await restoreReadingProgress(mangaPath)
+    if (savedPage > 1) {
+      setCurrentPage(savedPage)
+      if (readMode === 'double') {
+        await loadDoublePage(savedPage)
+      } else {
+        const url = await getPageUrl(savedPage)
+        if (url) setCurrentImageSrc(url)
+      }
+    }
+  }, [mangaPath, readMode, restoreReadingProgress, loadDoublePage, getPageUrl])
+
   useEffect(() => {
     const hash = window.location.hash
     let id = ''
@@ -252,6 +265,21 @@ function ReaderView() {
       loadScrollImages()
     }
   }, [readMode, archivePages.length, folderImages.length, loadScrollImages])
+
+  useEffect(() => {
+    if (readMode === 'scroll' && scrollImages.length > 0 && currentPage > 1) {
+      const imageIndex = currentPage - 1
+      if (imageIndex >= 0 && imageIndex < scrollImages.length) {
+        const container = scrollContainerRef.current
+        if (container) {
+          const targetImage = container.querySelector(`img[data-page-index="${imageIndex}"]`)
+          if (targetImage) {
+            targetImage.scrollIntoView({ behavior: 'instant', block: 'start' })
+          }
+        }
+      }
+    }
+  }, [readMode, scrollImages.length, currentPage])
 
   const handleClose = async () => {
     try {
@@ -471,7 +499,7 @@ function ReaderView() {
       ) : (
         <>
           {scrollImages.map((img, index) => (
-            <img key={index} src={img.url} alt={`第 ${index + 1} 页`} className="max-w-full mx-auto block" />
+            <img key={index} src={img.url} alt={`第 ${index + 1} 页`} className="max-w-full mx-auto block" data-page-index={index} />
           ))}
           <button onClick={scrollToTop}
             className="fixed bottom-8 right-8 w-10 h-10 bg-accent text-accent-text rounded-full shadow-lg flex items-center justify-center hover:bg-accent-hover transition-colors text-lg font-bold">
@@ -498,6 +526,11 @@ function ReaderView() {
         <div className="flex gap-2">
           <button onClick={cycleReadMode} className="px-3 py-1 bg-accent text-accent-text rounded text-sm font-medium hover:bg-accent-hover transition-colors">
             {readModeLabels[readMode]}
+          </button>
+          <button onClick={handleRestoreProgress}
+            className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm"
+            title="恢复上次阅读进度">
+            恢复进度
           </button>
           {readMode !== 'scroll' && (
             <button onClick={() => setAutoPage(!autoPage)}

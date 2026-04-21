@@ -1404,6 +1404,22 @@ function LibraryView() {
                   </span>
                 </div>
                 <div className="flex text-xs">
+                  <span className="text-text-muted w-16">添加日期</span>
+                  <span className="text-text-primary">
+                    {selectedManga.addedDate
+                      ? new Date(selectedManga.addedDate).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+                      : '-'}
+                  </span>
+                </div>
+                <div className="flex text-xs">
+                  <span className="text-text-muted w-16">上次阅读</span>
+                  <span className="text-text-primary">
+                    {selectedManga.lastOpened
+                      ? new Date(selectedManga.lastOpened).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+                      : '未阅读'}
+                  </span>
+                </div>
+                <div className="flex text-xs">
                   <span className="text-text-muted w-16">路径</span>
                   <span className="text-text-primary truncate ml-1" title={selectedManga.path}>
                     {selectedManga.path}
