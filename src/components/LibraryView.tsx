@@ -28,6 +28,8 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
   const [isExpanded, setIsExpanded] = useState(node.isExpanded)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showRenameDialog, setShowRenameDialog] = useState(false)
+  const [newName, setNewName] = useState('')
   const [showCreateSubfolder, setShowCreateSubfolder] = useState(false)
   const [newSubfolderName, setNewSubfolderName] = useState('')
   const [deleteMangaCount, setDeleteMangaCount] = useState(0)
@@ -81,6 +83,27 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
   const handleRefresh = async () => {
     setContextMenu(null)
     useMangaStore.getState().scanAndLoad()
+  }
+
+  const handleRenameClick = () => {
+    setContextMenu(null)
+    setNewName(node.name)
+    setShowRenameDialog(true)
+  }
+
+  const handleConfirmRename = async () => {
+    if (!newName.trim() || newName.trim() === node.name) {
+      setShowRenameDialog(false)
+      return
+    }
+    try {
+      await invoke('rename_folder', { oldPath: node.path, newName: newName.trim() })
+      setShowRenameDialog(false)
+      setNewName('')
+      useMangaStore.getState().scanAndLoad()
+    } catch (err) {
+      console.error('重命名文件夹失败:', err)
+    }
   }
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -188,6 +211,13 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
             </button>
             <div className="h-px bg-border-1 my-1" />
             <button
+              onClick={handleRenameClick}
+              className="w-full px-3 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover transition-colors"
+            >
+              重命名
+            </button>
+            <div className="h-px bg-border-1 my-1" />
+            <button
               onClick={handleDeleteClick}
               className="w-full px-3 py-1.5 text-left text-xs text-red-400 hover:bg-bg-hover transition-colors"
             >
@@ -195,6 +225,40 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
             </button>
           </div>
         </>
+      )}
+
+      {showRenameDialog && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
+          <div className="bg-bg-panel border border-border-1 rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
+            <h3 className="text-sm font-medium text-text-primary mb-3">重命名文件夹</h3>
+            <p className="text-text-secondary text-xs mb-2">
+              重命名 "{node.name}"
+            </p>
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="输入新名称"
+              className="w-full px-2 py-1.5 bg-bg-input border border-border-1 rounded text-xs text-text-primary placeholder-text-muted focus:outline-none focus:border-accent mb-4"
+              autoFocus
+              onKeyDown={(e) => e.key === 'Enter' && handleConfirmRename()}
+            />
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => { setShowRenameDialog(false); setNewName(''); }}
+                className="px-3 py-1.5 bg-bg-hover hover:bg-border-1 rounded text-text-secondary text-xs transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleConfirmRename}
+                className="px-3 py-1.5 bg-accent hover:bg-accent-hover rounded text-accent-text text-xs transition-colors"
+              >
+                确认
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showCreateSubfolder && (
@@ -277,6 +341,8 @@ function MangaCard({ manga, onClick, isSelected, onDragStart }: {
   const coverSize = useMangaStore((s) => s.coverSize)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showRenameDialog, setShowRenameDialog] = useState(false)
+  const [newMangaName, setNewMangaName] = useState('')
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 0) {
@@ -308,6 +374,36 @@ function MangaCard({ manga, onClick, isSelected, onDragStart }: {
   const handleRefresh = async () => {
     setContextMenu(null)
     useMangaStore.getState().scanAndLoad()
+  }
+
+  const handleRenameClick = () => {
+    setContextMenu(null)
+    setNewMangaName(manga.title)
+    setShowRenameDialog(true)
+  }
+
+  const handleConfirmRename = async () => {
+    if (!newMangaName.trim() || newMangaName.trim() === manga.title) {
+      setShowRenameDialog(false)
+      return
+    }
+    try {
+      let newName = newMangaName.trim()
+      if (manga.sourceType !== 'folder') {
+        const lastDot = manga.path.lastIndexOf('.')
+        const ext = lastDot !== -1 ? manga.path.substring(lastDot) : ''
+        const newNameLastDot = newName.lastIndexOf('.')
+        if (ext && (newNameLastDot === -1 || newName.substring(newNameLastDot) !== ext)) {
+          newName = newName + ext
+        }
+      }
+      await invoke('rename_file_or_folder', { oldPath: manga.path, newName })
+      setShowRenameDialog(false)
+      setNewMangaName('')
+      useMangaStore.getState().scanAndLoad()
+    } catch (err) {
+      console.error('重命名失败:', err)
+    }
   }
 
   const handleConfirmDelete = async () => {
@@ -397,6 +493,13 @@ function MangaCard({ manga, onClick, isSelected, onDragStart }: {
             </button>
             <div className="h-px bg-border-1 my-1" />
             <button
+              onClick={handleRenameClick}
+              className="w-full px-3 py-1.5 text-left text-xs text-text-primary hover:bg-bg-hover transition-colors"
+            >
+              重命名
+            </button>
+            <div className="h-px bg-border-1 my-1" />
+            <button
               onClick={handleDeleteClick}
               className="w-full px-3 py-1.5 text-left text-xs text-red-400 hover:bg-bg-hover transition-colors"
             >
@@ -428,6 +531,40 @@ function MangaCard({ manga, onClick, isSelected, onDragStart }: {
                 className="px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded text-white text-xs transition-colors"
               >
                 确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRenameDialog && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
+          <div className="bg-bg-panel border border-border-1 rounded-lg shadow-xl p-6 max-w-sm w-full mx-4">
+            <h3 className="text-sm font-medium text-text-primary mb-3">重命名</h3>
+            <p className="text-text-secondary text-xs mb-2">
+              重命名 "{manga.title}"
+            </p>
+            <input
+              type="text"
+              value={newMangaName}
+              onChange={(e) => setNewMangaName(e.target.value)}
+              placeholder="输入新名称"
+              className="w-full px-2 py-1.5 bg-bg-input border border-border-1 rounded text-xs text-text-primary placeholder-text-muted focus:outline-none focus:border-accent mb-4"
+              autoFocus
+              onKeyDown={(e) => e.key === 'Enter' && handleConfirmRename()}
+            />
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => { setShowRenameDialog(false); setNewMangaName(''); }}
+                className="px-3 py-1.5 bg-bg-hover hover:bg-border-1 rounded text-text-secondary text-xs transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleConfirmRename}
+                className="px-3 py-1.5 bg-accent hover:bg-accent-hover rounded text-accent-text text-xs transition-colors"
+              >
+                确认
               </button>
             </div>
           </div>

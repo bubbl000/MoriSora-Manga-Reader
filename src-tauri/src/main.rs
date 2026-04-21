@@ -138,6 +138,11 @@ fn rename_folder(old_path: String, new_name: String) -> folder_manager::FolderOp
 }
 
 #[tauri::command]
+fn rename_file_or_folder(old_path: String, new_name: String) -> folder_manager::FolderOperationResult {
+    folder_manager::rename_file_or_folder(&old_path, &new_name)
+}
+
+#[tauri::command]
 fn delete_folder(folder_path: String, force: bool) -> folder_manager::FolderOperationResult {
     folder_manager::delete_folder(&folder_path, force)
 }
@@ -265,6 +270,7 @@ fn main() {
             get_all_tags,
             create_folder,
             rename_folder,
+            rename_file_or_folder,
             delete_folder,
             copy_file_to_folder,
             move_file_to_folder,

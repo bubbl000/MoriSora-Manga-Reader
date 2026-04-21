@@ -65,7 +65,24 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
 }
 
 fn extension_of(path: &Path) -> Option<String> {
-    path.extension().map(|e| e.to_string_lossy().to_lowercase())
+    path.extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .or_else(|| {
+            let path_str = path.to_string_lossy().to_lowercase();
+            if path_str.ends_with(".zip") {
+                Some("zip".to_string())
+            } else if path_str.ends_with(".cbz") {
+                Some("cbz".to_string())
+            } else if path_str.ends_with(".cbr") {
+                Some("cbr".to_string())
+            } else if path_str.ends_with(".rar") {
+                Some("rar".to_string())
+            } else if path_str.ends_with(".pdf") {
+                Some("pdf".to_string())
+            } else {
+                None
+            }
+        })
 }
 
 fn is_image_entry_name(name: &str) -> bool {
@@ -92,26 +109,57 @@ pub fn get_archive_type(path: &str) -> Option<String> {
 
 pub fn list_archive_images(path: &str) -> Result<Vec<ArchivePageInfo>, String> {
     let archive_path = Path::new(path);
-    let ext = extension_of(archive_path).unwrap_or_default();
+    let ext = extension_of(archive_path);
 
-    match ext.as_str() {
-        "cbz" | "zip" => list_cbz_images(path),
-        "cbr" | "rar" => list_cbr_images(path),
-        "pdf" => list_pdf_pages(path),
-        _ => Err(format!("不支持的格式: {}", ext)),
+    match ext.as_deref() {
+        Some("cbz") | Some("zip") => list_cbz_images(path),
+        Some("cbr") | Some("rar") => list_cbr_images(path),
+        Some("pdf") => list_pdf_pages(path),
+        _ => match detect_format_by_magic_bytes(path) {
+            Some("zip") => list_cbz_images(path),
+            Some("rar") => list_cbr_images(path),
+            Some("pdf") => list_pdf_pages(path),
+            None => Err(format!("文件没有扩展名且无法识别格式: {}", path)),
+            _ => Err(format!("不支持的格式: '{:?}' (仅支持 cbz/zip/cbr/rar/pdf)", ext)),
+        },
     }
 }
 
 pub fn read_archive_image_bytes(path: &str, entry_path: &str) -> Result<Vec<u8>, String> {
     let archive_path = Path::new(path);
-    let ext = extension_of(archive_path).unwrap_or_default();
+    let ext = extension_of(archive_path);
 
-    match ext.as_str() {
-        "cbz" | "zip" => read_cbz_image_entry(path, entry_path),
-        "cbr" | "rar" => read_cbr_image_entry(path, entry_path),
-        "pdf" => read_pdf_page(path, entry_path.parse::<usize>().unwrap_or(1)),
-        _ => Err(format!("不支持的格式: {}", ext)),
+    match ext.as_deref() {
+        Some("cbz") | Some("zip") => read_cbz_image_entry(path, entry_path),
+        Some("cbr") | Some("rar") => read_cbr_image_entry(path, entry_path),
+        Some("pdf") => read_pdf_page(path, entry_path.parse::<usize>().unwrap_or(1)),
+        _ => match detect_format_by_magic_bytes(path) {
+            Some("zip") => read_cbz_image_entry(path, entry_path),
+            Some("rar") => read_cbr_image_entry(path, entry_path),
+            Some("pdf") => read_pdf_page(path, entry_path.parse::<usize>().unwrap_or(1)),
+            None => Err(format!("文件没有扩展名且无法识别格式: {}", path)),
+            _ => Err(format!("不支持的格式: '{:?}' (文件: {})", ext, path)),
+        },
     }
+}
+
+fn detect_format_by_magic_bytes(path: &str) -> Option<&'static str> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut buf = [0u8; 8];
+    let n = file.read(&mut buf).ok()?;
+    if n < 4 {
+        return None;
+    }
+    if buf[0] == 0x50 && buf[1] == 0x4B && buf[2] == 0x03 && buf[3] == 0x04 {
+        return Some("zip");
+    }
+    if n >= 7 && buf[0] == 0x52 && buf[1] == 0x61 && buf[2] == 0x72 && buf[3] == 0x21 && buf[4] == 0x1A && buf[5] == 0x07 {
+        return Some("rar");
+    }
+    if buf[0] == 0x25 && buf[1] == 0x50 && buf[2] == 0x44 && buf[3] == 0x46 {
+        return Some("pdf");
+    }
+    None
 }
 
 fn list_cbz_images(path: &str) -> Result<Vec<ArchivePageInfo>, String> {

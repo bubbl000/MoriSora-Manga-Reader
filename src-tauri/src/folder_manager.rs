@@ -124,3 +124,47 @@ pub fn delete_folder(folder_path: &str, force: bool) -> FolderOperationResult {
         }
     }
 }
+
+pub fn rename_file_or_folder(old_path: &str, new_name: &str) -> FolderOperationResult {
+    let old = Path::new(old_path);
+    if !old.exists() {
+        return FolderOperationResult {
+            success: false,
+            message: format!("原文件或文件夹不存在: {}", old_path),
+            path: None,
+        };
+    }
+
+    let parent = match old.parent() {
+        Some(p) => p,
+        None => {
+            return FolderOperationResult {
+                success: false,
+                message: "无法获取父目录".to_string(),
+                path: None,
+            }
+        }
+    };
+
+    let new_path = parent.join(new_name);
+    if new_path.exists() {
+        return FolderOperationResult {
+            success: false,
+            message: format!("目标名称已存在: {}", new_name),
+            path: None,
+        };
+    }
+
+    match fs::rename(old, &new_path) {
+        Ok(()) => FolderOperationResult {
+            success: true,
+            message: format!("重命名成功: {}", new_name),
+            path: Some(new_path.to_string_lossy().to_string()),
+        },
+        Err(e) => FolderOperationResult {
+            success: false,
+            message: format!("无法重命名: {}", e),
+            path: None,
+        },
+    }
+}
