@@ -11,6 +11,21 @@ export default defineConfig(async () => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    target: "es2020",
+    outDir: "dist",
+    sourcemap: false,
+    minify: "esbuild",
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom"],
+          tauri: ["@tauri-apps/api/window", "@tauri-apps/api/core"],
+          pdfjs: ["pdfjs-dist"],
+        },
+      },
+    },
+  },
   clearScreen: false,
   server: {
     port: 5173,

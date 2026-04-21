@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
-use lazy_static::lazy_static;
 use std::fs;
 
 struct CachedZip {
@@ -14,10 +13,8 @@ struct CachedCbr {
     last_accessed: Instant,
 }
 
-lazy_static! {
-    static ref ZIP_CACHE: Mutex<HashMap<String, CachedZip>> = Mutex::new(HashMap::new());
-    static ref CBR_CACHE: Mutex<HashMap<String, CachedCbr>> = Mutex::new(HashMap::new());
-}
+static ZIP_CACHE: LazyLock<Mutex<HashMap<String, CachedZip>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static CBR_CACHE: LazyLock<Mutex<HashMap<String, CachedCbr>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn get_or_load_zip(path: &str) -> Result<Arc<Vec<u8>>, String> {
     {

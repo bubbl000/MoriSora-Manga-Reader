@@ -198,7 +198,16 @@ function ReaderView() {
   const [readMode, setReadMode] = useState<ReadMode>('single')
   const [doublePageRight, setDoublePageRight] = useState('')
   const [scrollImages, setScrollImages] = useState<{ path: string; url: string }[]>([])
+  /**
+   * Scroll 模式虚拟滚动实现
+   * 只渲染可见区域 + 缓冲区的页面，减少 DOM 节点数量
+   * 使用估算高度 + padding 保持正确的滚动位置
+   */
+  const [scrollTop, setScrollTop] = useState(0)
+  const [containerHeight, setContainerHeight] = useState(0)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const estimatedPageHeight = useRef(800) // 估算每页高度（px）
+  const VISIBLE_BUFFER = 3 // 上下各多渲染 3 页作为缓冲区
   // Scroll 模式按需加载：记录已加载的页码集合，避免重复加载
   const loadedScrollPagesRef = useRef<Set<number>>(new Set())
   // 正在加载中的页码集合，避免并发重复请求
@@ -507,43 +516,25 @@ function ReaderView() {
   }, [totalPages, loadScrollPageRange])
 
   /**
-   * Scroll 模式可视区域变化时触发预加载
-   * 根据当前滚动位置加载上下各 3 张图片
+   * Scroll 模式虚拟滚动 + 按需加载
+   * 计算可见区域 + 缓冲区的页面范围，动态加载和渲染
    */
-  const handleScrollPreload = useCallback(() => {
+  const handleScrollUpdate = useCallback(() => {
     const container = scrollContainerRef.current
-    if (!container || scrollImages.length === 0) return
+    if (!container || totalPages === 0) return
 
     const scrollTop = container.scrollTop
     const containerHeight = container.clientHeight
-    const images = container.querySelectorAll('img[data-page-index]')
+    setScrollTop(scrollTop)
+    setContainerHeight(containerHeight)
     
-    // 找到当前可视区域内的第一张和最后一张图片
-    let firstVisibleIndex = -1
-    let lastVisibleIndex = -1
+    // 计算可见的起始和结束页码
+    const startPage = Math.max(1, Math.floor(scrollTop / estimatedPageHeight.current) - VISIBLE_BUFFER)
+    const visiblePages = Math.ceil(containerHeight / estimatedPageHeight.current)
+    const endPage = Math.min(totalPages, startPage + visiblePages + VISIBLE_BUFFER * 2)
     
-    images.forEach((img, idx) => {
-      const rect = img.getBoundingClientRect()
-      const containerRect = container.getBoundingClientRect()
-      const imgTop = rect.top - containerRect.top
-      const imgBottom = rect.bottom - containerRect.top
-      
-      if (imgBottom > 0 && imgTop < containerHeight) {
-        if (firstVisibleIndex === -1) firstVisibleIndex = idx
-        lastVisibleIndex = idx
-      }
-    })
-
-    if (firstVisibleIndex === -1) return
-
-    // 计算需要预加载的范围：当前可视区域上下各扩展 3 张
-    const preloadBefore = 3
-    const preloadAfter = 3
-    const startPageIndex = Math.max(1, firstVisibleIndex - preloadBefore + 1)
-    const endPageIndex = Math.min(totalPages, lastVisibleIndex + preloadAfter + 1)
-    
-    loadScrollPageRange(startPageIndex, endPageIndex)
-  }, [scrollImages.length, totalPages, loadScrollPageRange])
+    loadScrollPageRange(startPage, endPage)
+  }, [totalPages, loadScrollPageRange])
 
   useEffect(() => {
     return () => {
@@ -591,29 +582,18 @@ function ReaderView() {
     }
   }, [readMode, scrollImages.length, currentPage])
 
-  // Scroll 模式下监听滚动事件，触发按需预加载
+  // Scroll 模式下监听滚动事件，触发虚拟滚动更新
   useEffect(() => {
     if (readMode !== 'scroll') return
     
     const container = scrollContainerRef.current
     if (!container) return
     
-    let scrollTimer: number | null = null
-    const handleScroll = () => {
-      // 使用防抖避免滚动时频繁触发
-      if (scrollTimer) return
-      scrollTimer = window.setTimeout(() => {
-        scrollTimer = null
-        handleScrollPreload()
-      }, 200)
-    }
-    
-    container.addEventListener('scroll', handleScroll, { passive: true })
-    return () => {
-      container.removeEventListener('scroll', handleScroll)
-      if (scrollTimer) clearTimeout(scrollTimer)
-    }
-  }, [readMode, handleScrollPreload])
+    container.addEventListener('scroll', handleScrollUpdate, { passive: true })
+    // 初始化时立即执行一次
+    handleScrollUpdate()
+    return () => container.removeEventListener('scroll', handleScrollUpdate)
+  }, [readMode, handleScrollUpdate])
 
   const handleClose = async () => {
     try {
@@ -844,77 +824,87 @@ function ReaderView() {
   )
 
   const renderScrollMode = () => {
-    // 构建完整的页面列表：已加载的图片 + 未加载的占位符
-    const renderScrollContent = () => {
-      if (totalPages === 0) {
-        return (
+    if (totalPages === 0) {
+      return (
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 relative">
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
               <span className="text-6xl mb-4 block">📄</span>
               <p className="text-text-primary text-lg">暂无图片</p>
             </div>
           </div>
+        </div>
+      )
+    }
+
+    // 虚拟滚动计算
+    const startPage = Math.max(1, Math.floor(scrollTop / estimatedPageHeight.current) - VISIBLE_BUFFER)
+    const visiblePages = containerHeight > 0 ? Math.ceil(containerHeight / estimatedPageHeight.current) : 3
+    const endPage = Math.min(totalPages, startPage + visiblePages + VISIBLE_BUFFER * 2)
+    
+    // 总高度
+    const totalHeight = totalPages * estimatedPageHeight.current
+    // 偏移量
+    const offsetY = (startPage - 1) * estimatedPageHeight.current
+    
+    // 已加载页面的 URL 映射
+    const loadedUrlMap = new Map<string, string>()
+    scrollImages.forEach(img => loadedUrlMap.set(img.path, img.url))
+
+    const elements: React.ReactNode[] = []
+    for (let page = startPage; page <= endPage; page++) {
+      const pageKey = String(page)
+      const imageUrl = loadedUrlMap.get(pageKey)
+      
+      if (imageUrl) {
+        elements.push(
+          <img 
+            key={page} 
+            src={imageUrl} 
+            alt={`第 ${page} 页`} 
+            className="max-w-full mx-auto block"
+            style={{ width: '100%', minHeight: `${estimatedPageHeight.current}px` }}
+            onLoad={(e) => {
+              // 图片加载完成后更新估算高度
+              const imgElement = e.target as HTMLImageElement
+              const actualHeight = imgElement.offsetHeight
+              if (actualHeight > 0 && actualHeight !== estimatedPageHeight.current) {
+                estimatedPageHeight.current = actualHeight
+              }
+            }}
+          />
+        )
+      } else {
+        elements.push(
+          <div 
+            key={page}
+            className="w-full flex items-center justify-center border border-border-1 rounded bg-bg-card"
+            style={{ height: `${estimatedPageHeight.current}px` }}
+          >
+            <div className="text-center">
+              <p className="text-text-muted text-sm">第 {page} 页</p>
+              <p className="text-text-muted text-xs mt-1">加载中...</p>
+            </div>
+          </div>
         )
       }
-
-      // 构建已加载页面的 URL 映射表
-      const loadedUrlMap = new Map<string, string>()
-      scrollImages.forEach(img => loadedUrlMap.set(img.path, img.url))
-
-      const elements: React.ReactNode[] = []
-      
-      for (let page = 1; page <= totalPages; page++) {
-        const pageKey = String(page)
-        const imageUrl = loadedUrlMap.get(pageKey)
-        
-        if (imageUrl) {
-          // 已加载的图片
-          elements.push(
-            <img 
-              key={page} 
-              src={imageUrl} 
-              alt={`第 ${page} 页`} 
-              className="max-w-full mx-auto block" 
-              data-page-index={page - 1}
-            />
-          )
-        } else {
-          // 未加载的占位符，保持布局稳定
-          elements.push(
-            <div 
-              key={page} 
-              className="w-full min-h-[200px] flex items-center justify-center border border-border-1 rounded"
-              data-page-index={page - 1}
-            >
-              <div className="text-center">
-                <p className="text-text-muted text-sm">第 {page} 页 / 共 {totalPages} 页</p>
-                <p className="text-text-muted text-xs mt-1">滚动至可视区域自动加载</p>
-              </div>
-            </div>
-          )
-        }
-      }
-
-      return elements
     }
 
     return (
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-2 relative">
-        {isLoading && scrollImages.length === 0 ? (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-text-secondary">加载中...</p>
+      <div 
+        ref={scrollContainerRef} 
+        className="flex-1 overflow-y-auto p-4 relative"
+        style={{ position: 'relative' }}
+      >
+        <div style={{ height: `${totalHeight}px`, position: 'relative' }}>
+          <div style={{ transform: `translateY(${offsetY}px)` }}>
+            {elements}
           </div>
-        ) : (
-          <>
-            <div className="space-y-2">
-              {renderScrollContent()}
-            </div>
-            <button onClick={scrollToTop}
-              className="fixed bottom-8 right-8 w-10 h-10 bg-accent text-accent-text rounded-full shadow-lg flex items-center justify-center hover:bg-accent-hover transition-colors text-lg font-bold">
-              ↑
-            </button>
-          </>
-        )}
+        </div>
+        <button onClick={() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+          className="fixed bottom-8 right-8 w-10 h-10 bg-accent text-accent-text rounded-full shadow-lg flex items-center justify-center hover:bg-accent-hover transition-colors text-lg font-bold">
+          ↑
+        </button>
       </div>
     )
   }

@@ -15,8 +15,7 @@ use database::AppState;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use lazy_static::lazy_static;
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// Maximum recursion depth to prevent stack overflow
 const MAX_RECURSION_DEPTH: usize = 20;
@@ -27,11 +26,10 @@ use std::io::Cursor as IoCursor;
 use image::GenericImageView;
 
 /// 压缩图片缓存：缓存键为 "path:max_width:quality"
-lazy_static! {
-    static ref COMPRESSED_CACHE: Mutex<HashMap<String, Arc<Vec<u8>>>> = 
-        Mutex::new(HashMap::with_capacity(MAX_CACHE_SIZE));
-    static ref CACHE_ORDER: Mutex<Vec<String>> = Mutex::new(Vec::with_capacity(MAX_CACHE_SIZE));
-}
+static COMPRESSED_CACHE: LazyLock<Mutex<HashMap<String, Arc<Vec<u8>>>>> = 
+    LazyLock::new(|| Mutex::new(HashMap::with_capacity(MAX_CACHE_SIZE)));
+static CACHE_ORDER: LazyLock<Mutex<Vec<String>>> = 
+    LazyLock::new(|| Mutex::new(Vec::with_capacity(MAX_CACHE_SIZE)));
 
 /// 压缩图片并缓存结果
 /// 将图片缩放到最大宽度 1920px，质量 85%

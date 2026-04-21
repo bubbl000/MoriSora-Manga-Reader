@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use lazy_static::lazy_static;
+use std::sync::{LazyLock, Mutex};
 
 static SETTINGS_PATH: &str = "manga-reader-settings.json";
 
@@ -20,9 +19,7 @@ impl Default for AppSettings {
 }
 
 // 设置缓存，避免频繁读写文件
-lazy_static! {
-    static ref CACHED_SETTINGS: Mutex<Option<AppSettings>> = Mutex::new(None);
-}
+static CACHED_SETTINGS: LazyLock<Mutex<Option<AppSettings>>> = LazyLock::new(|| Mutex::new(None));
 
 pub fn get_settings_path() -> PathBuf {
     let mut path = dirs::document_dir().unwrap_or_else(|| PathBuf::from("."));
