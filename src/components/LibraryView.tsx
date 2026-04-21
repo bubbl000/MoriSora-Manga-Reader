@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useMangaStore, MangaItem, FolderNode, setDropCallback, initDragDropListener } from '../stores/mangaStore'
 import SettingsDialog from './SettingsDialog'
@@ -340,7 +340,8 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
 }
 
 // Manga cover card component
-function MangaCard({ manga, onClick, isSelected, onDragStart, onShowMessage }: {
+// 使用 React.memo 优化 MangaCard 组件，避免不必要的重渲染
+const MangaCard = React.memo(function MangaCard({ manga, onClick, isSelected, onDragStart, onShowMessage }: {
   manga: MangaItem
   onClick: () => void
   isSelected: boolean
@@ -585,7 +586,7 @@ function MangaCard({ manga, onClick, isSelected, onDragStart, onShowMessage }: {
       )}
     </>
   )
-}
+});
 
 function LibraryView() {
   const {

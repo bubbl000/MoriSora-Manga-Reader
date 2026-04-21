@@ -220,7 +220,7 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
               title: comic.title,
               path: comic.path,
               folderPath,
-              sourceType: comic.source_type,
+              sourceType: comic.source_type as SourceType,
               isFavorite: false,
               currentPage: 0,
               totalPages: 0,
@@ -543,8 +543,10 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
   applyFilters: async () => {
     const { mangaList, searchQuery, selectedFolder, selectedTag, currentViewMode, sortBy, currentPage, pageSize } = get()
     
-    let filtered = [...mangaList]
+    // 使用链式操作避免中间数组副本
+    let filtered = mangaList
     
+    // 收藏模式过滤
     if (currentViewMode === 'favorites') {
       filtered = filtered.filter(m => m.isFavorite)
     } else if (currentViewMode === 'tags' && !selectedTag) {
@@ -563,10 +565,12 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
       return
     }
     
+    // 文件夹过滤
     if (selectedFolder && !selectedTag) {
       filtered = filtered.filter(m => m.folderPath.startsWith(selectedFolder))
     }
     
+    // 标签或搜索过滤
     if (selectedTag) {
       const comics = await invoke<ComicMetadata[]>('get_comics_by_tag', { tagName: selectedTag })
       const comicPaths = new Set(comics.map(c => c.path))
@@ -576,6 +580,7 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
       filtered = filtered.filter(m => m.title.toLowerCase().includes(query))
     }
     
+    // 排序
     filtered.sort((a, b) => {
       switch (sortBy) {
         case 'name':

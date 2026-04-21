@@ -6,6 +6,24 @@ use std::sync::Mutex;
 
 // ================== Tauri State 管理 ==================
 
+/// 执行 EXPLAIN QUERY PLAN 并打印结果（用于性能分析）
+pub fn explain_query(conn: &Connection, sql: &str) {
+    let explain_sql = format!("EXPLAIN QUERY PLAN {}", sql);
+    if let Ok(mut stmt) = conn.prepare(&explain_sql) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            let detail: String = row.get(3)?;
+            Ok(detail)
+        }) {
+            eprintln!("[QUERY PLAN] {}", sql);
+            for row_result in rows {
+                if let Ok(detail) = row_result {
+                    eprintln!("  -> {}", detail);
+                }
+            }
+        }
+    }
+}
+
 /// 数据库连接状态，通过 Tauri State 管理单一长连接
 pub struct AppState {
     pub db_conn: Mutex<Connection>,
@@ -247,9 +265,10 @@ fn row_to_comic_metadata(row: &rusqlite::Row) -> rusqlite::Result<ComicMetadata>
 
 // ================== 漫画元数据操作 ==================
 
-/// 批量插入/更新漫画元数据（使用事务，性能提升 10-50 倍）
+/// 批量插入/更新漫画元数据（使用事务 + RETURNING，性能提升 10-50 倍）
 pub fn batch_upsert_comic_metadata(state: &AppState, comics: &[ComicMetadata]) -> Result<Vec<i64>, String> {
     state.with_transaction(|tx| {
+        // 使用 SQLite 3.35+ 支持的 RETURNING 子句，避免额外的 SELECT 查询
         let mut stmt = tx.prepare(
             "INSERT INTO comic_metadata (path, title, source_type, page_count, last_opened, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -257,17 +276,14 @@ pub fn batch_upsert_comic_metadata(state: &AppState, comics: &[ComicMetadata]) -
                  title = excluded.title,
                  source_type = excluded.source_type,
                  page_count = excluded.page_count,
-                 updated_at = excluded.updated_at"
-        )?;
-        
-        let mut select_stmt = tx.prepare(
-            "SELECT id FROM comic_metadata WHERE path = ?1"
+                 updated_at = excluded.updated_at
+             RETURNING id"
         )?;
         
         let mut ids = Vec::with_capacity(comics.len());
         
         for comic in comics {
-            stmt.execute(params![
+            let id: i64 = stmt.query_row(params![
                 comic.path,
                 comic.title,
                 comic.source_type,
@@ -275,9 +291,7 @@ pub fn batch_upsert_comic_metadata(state: &AppState, comics: &[ComicMetadata]) -
                 comic.last_opened,
                 comic.created_at,
                 comic.updated_at,
-            ])?;
-            
-            let id: i64 = select_stmt.query_row(params![comic.path], |row| row.get(0))?;
+            ], |row| row.get(0))?;
             ids.push(id);
         }
         
@@ -337,6 +351,23 @@ pub fn get_comic_id_by_path(state: &AppState, path: &str) -> Result<Option<i64>,
             |row| row.get(0),
         ).ok())
     })
+}
+
+/// 使用 SQL LIKE 直接统计文件夹中的漫画数量（优化版本）
+pub fn count_comics_in_folder(state: &AppState, folder_path: &str) -> Result<usize, String> {
+    let conn_guard = state.db_conn.lock().map_err(|e| format!("数据库锁失败: {}", e))?;
+    
+    // 标准化路径分隔符
+    let normalized_path = folder_path.replace('/', "\\");
+    let pattern = format!("{}%", normalized_path.trim_end_matches('\\').trim_end_matches('/'));
+    
+    let count: i64 = conn_guard.query_row(
+        "SELECT COUNT(*) FROM comic_metadata WHERE path LIKE ?1",
+        params![pattern],
+        |row| row.get(0),
+    ).map_err(|e| format!("统计漫画失败: {}", e))?;
+    
+    Ok(count as usize)
 }
 
 /// 查询所有漫画

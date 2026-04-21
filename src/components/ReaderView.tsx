@@ -340,15 +340,8 @@ function ReaderView() {
         canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.9)
       })
       if (!blob) throw new Error('PDF页面转Blob失败')
-      const reader = new FileReader()
-      const url = await new Promise<string>((resolve, reject) => {
-        reader.onloadend = () => {
-          if (typeof reader.result === 'string') resolve(reader.result)
-          else reject(new Error('转换PDF为DataURL失败'))
-        }
-        reader.onerror = () => reject(new Error('读取PDF Blob失败'))
-        reader.readAsDataURL(blob)
-      })
+      // 使用 createObjectURL 替代 FileReader.readAsDataURL，避免 base64 33% 体积增加
+      const url = URL.createObjectURL(blob)
       addBlobUrl(url)
       imageCache.set(pageNumber, url)
       // 清理单页渲染资源，但不销毁文档
@@ -414,8 +407,8 @@ function ReaderView() {
 
   const restoreReadingProgress = useCallback(async (path: string) => {
     try {
-      const comics = await databaseService.getAllComicsMetadata()
-      const comic = comics.find(c => c.path === path)
+      // 使用按路径查询，避免加载全部漫画元数据
+      const comic = await databaseService.getComicByPath(path)
       if (comic && comic.id) {
         setComicId(comic.id)
         const progress = await databaseService.getReadingProgress(comic.id)

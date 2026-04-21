@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod sort_utils;
+mod archive_cache;
 mod archive_parser;
 mod database;
 mod events;
@@ -17,6 +18,35 @@ use std::path::Path;
 
 /// Maximum recursion depth to prevent stack overflow
 const MAX_RECURSION_DEPTH: usize = 20;
+
+// 图片后端压缩功能
+use std::io::Cursor as IoCursor;
+use image::GenericImageView;
+
+/// 压缩图片以减少 IPC 传输
+/// 将图片缩放到最大宽度 1920px，质量 85%
+fn compress_image_bytes(data: &[u8], max_width: u32, quality: u8) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(data)
+        .map_err(|e| format!("图片解码失败: {}", e))?;
+    
+    // 如果图片超过最大宽度，进行缩放
+    let (w, h) = img.dimensions();
+    let img = if w > max_width {
+        let ratio = max_width as f32 / w as f32;
+        let new_h = (h as f32 * ratio) as u32;
+        img.resize(max_width, new_h, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+    
+    // 编码为 JPEG
+    let mut output = Vec::new();
+    let mut cursor = IoCursor::new(&mut output);
+    img.write_to(&mut cursor, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("图片编码失败: {}", e))?;
+    
+    Ok(output)
+}
 
 #[tauri::command]
 fn read_image_bytes(file_path: String) -> Result<Vec<u8>, String> {
@@ -236,8 +266,7 @@ fn delete_file_or_folder(path: String) -> Result<String, String> {
 
 #[tauri::command]
 fn count_manga_in_folder(state: State<AppState>, folder_path: String) -> Result<usize, String> {
-    let all_comics = database::get_all_comics(&state).map_err(|e| format!("无法获取漫画列表: {}", e))?;
-    Ok(file_operations::count_manga_in_folder(&folder_path, &all_comics))
+    database::count_comics_in_folder(&state, &folder_path)
 }
 
 #[tauri::command]

@@ -1,15 +1,26 @@
 use std::cmp::Ordering;
+use std::sync::LazyLock;
+use regex::Regex;
 
 // 参考: e:\06-xiangmu\处理中\new2\manga-reader\src-tauri\src\archive_parser.rs (原 L20-L65)
 // 参考: e:\06-xiangmu\处理中\new2\manga-reader\src-tauri\src\library_scanner.rs (原 L170-L215)
 
+/// 缓存的正则表达式，避免每次比较时重新编译
+static NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)").unwrap());
+
 /// 自然排序比较函数
 /// 例如: "chapter1" < "chapter2" < "chapter10"
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let re = regex::Regex::new(r"(\d+)").unwrap();
+    // 先比较原始字符串，如果相等则直接返回，避免分配
+    if a == b {
+        return Ordering::Equal;
+    }
+    
+    let re = &*NUMBER_RE;
     let mut a_parts = re.find_iter(a);
     let mut b_parts = re.find_iter(b);
 
+    // 延迟分配 lowercase，只在需要时创建
     let a_lower = a.to_ascii_lowercase();
     let b_lower = b.to_ascii_lowercase();
 

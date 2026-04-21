@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use crate::sort_utils::natural_cmp;
@@ -36,8 +36,9 @@ pub fn scan_comic_directory(directory: &str) -> ScanResult {
 
     let mut comics = Vec::new();
     let mut visited = HashSet::new();
+    let mut folder_cache = HashMap::new();
     
-    if let Err(e) = scan_directory_recursive(&path, &mut comics, &mut visited, 0) {
+    if let Err(e) = scan_directory_recursive(&path, &mut comics, &mut visited, &mut folder_cache, 0) {
         return ScanResult {
             comics,
             error: Some(format!("扫描出错: {}", e)),
@@ -54,6 +55,7 @@ fn scan_directory_recursive(
     dir: &Path,
     comics: &mut Vec<ComicCandidate>,
     visited: &mut HashSet<String>,
+    folder_cache: &mut HashMap<PathBuf, bool>,
     current_depth: usize,
 ) -> Result<(), String> {
     // Prevent stack overflow by limiting recursion depth
@@ -94,7 +96,7 @@ fn scan_directory_recursive(
         }
         
         if path.is_dir() {
-            scan_directory_recursive(&path, comics, visited, current_depth + 1)?;
+            scan_directory_recursive(&path, comics, visited, folder_cache, current_depth + 1)?;
         } else if path.is_file() {
             if let Some(ext) = path.extension() {
                 let ext_lower = ext.to_string_lossy().to_lowercase();
@@ -123,13 +125,20 @@ fn scan_directory_recursive(
                     });
                 } else if IMAGE_EXTENSIONS.contains(&ext_lower.as_str()) {
                     // Check if this image is alone in its parent directory
-                    let parent = path.parent().unwrap_or(Path::new(""));
-                    let has_comic_archive = folder_has_comic_archives(parent);
+                    let parent = path.parent().unwrap_or(Path::new("")).to_path_buf();
+                    // 使用缓存避免重复 read_dir
+                    let has_comic_archive = if let Some(&cached) = folder_cache.get(&parent) {
+                        cached
+                    } else {
+                        let result = folder_has_comic_archives(&parent);
+                        folder_cache.insert(parent.clone(), result);
+                        result
+                    };
                     
                     if !has_comic_archive {
                         // Check if we haven't already added this folder as an image folder
                         let already_added = comics.iter().any(|c| {
-                            PathBuf::from(&c.path).parent() == Some(parent) && c.source_type == "folder"
+                            PathBuf::from(&c.path).parent() == Some(&parent) && c.source_type == "folder"
                         });
                         
                         if !already_added {

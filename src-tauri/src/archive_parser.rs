@@ -4,9 +4,10 @@ use std::fs;
 use std::io::Cursor;
 use std::io::Read;
 use std::path::Path;
-use lopdf::Document;
-use unrar::Archive;
 use crate::sort_utils::natural_cmp;
+use crate::archive_cache::{get_or_load_zip, get_or_extract_cbr};
+use unrar::Archive;
+use lopdf::Document;
 
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif"];
 
@@ -155,11 +156,11 @@ fn list_cbz_images(path: &str) -> Result<Vec<ArchivePageInfo>, String> {
 }
 
 fn read_cbz_image_entry(path: &str, entry_path: &str) -> Result<Vec<u8>, String> {
-    let archive_path = Path::new(path);
-    let file = fs::File::open(archive_path)
-        .map_err(|e| format!("无法打开CBZ文件 {}: {}", path, e))?;
+    // 使用缓存的 ZIP 数据，避免重复打开文件
+    let data = get_or_load_zip(path)?;
     
-    let mut archive = zip::ZipArchive::new(file)
+    let cursor = Cursor::new(data);
+    let mut archive = zip::ZipArchive::new(cursor)
         .map_err(|e| format!("无法读取CBZ档案 {}: {}", path, e))?;
 
     let mut entry = archive.by_name(entry_path)
@@ -206,32 +207,13 @@ fn list_cbr_images(path: &str) -> Result<Vec<ArchivePageInfo>, String> {
 }
 
 fn read_cbr_image_entry(path: &str, entry_path: &str) -> Result<Vec<u8>, String> {
-    let mut archive = Archive::new(path)
-        .open_for_processing()
-        .map_err(|e| format!("无法打开CBR文件 {}: {}", path, e))?;
-
-    loop {
-        let Some(before_file) = archive
-            .read_header()
-            .map_err(|e| format!("读取CBR头失败 {}: {}", path, e))?
-        else {
-            break;
-        };
-
-        let current_name = before_file.entry().filename.to_string_lossy().replace('\\', "/");
-        if current_name == entry_path {
-            let (data, _after_read) = before_file
-                .read()
-                .map_err(|e| format!("读取CBR条目失败 {}: {}", entry_path, e))?;
-            return Ok(data);
-        }
-
-        archive = before_file
-            .skip()
-            .map_err(|e| format!("跳过CBR条目失败 {}: {}", entry_path, e))?;
+    // 使用缓存的 CBR 解压数据，避免重复遍历
+    let entries = get_or_extract_cbr(path)?;
+    
+    match entries.get(entry_path) {
+        Some(data) => Ok(data.clone()),
+        None => Err(format!("找不到CBR条目: {}", entry_path)),
     }
-
-    Err(format!("找不到CBR条目: {}", entry_path))
 }
 
 fn list_pdf_pages(path: &str) -> Result<Vec<ArchivePageInfo>, String> {

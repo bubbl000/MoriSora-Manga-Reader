@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use lazy_static::lazy_static;
 
 static SETTINGS_PATH: &str = "manga-reader-settings.json";
 
@@ -17,6 +19,11 @@ impl Default for AppSettings {
     }
 }
 
+// 设置缓存，避免频繁读写文件
+lazy_static! {
+    static ref CACHED_SETTINGS: Mutex<Option<AppSettings>> = Mutex::new(None);
+}
+
 pub fn get_settings_path() -> PathBuf {
     let mut path = dirs::document_dir().unwrap_or_else(|| PathBuf::from("."));
     path.push("manga-reader");
@@ -25,11 +32,23 @@ pub fn get_settings_path() -> PathBuf {
 }
 
 pub fn load_settings() -> Result<AppSettings, String> {
+    // 先检查缓存
+    {
+        let cache = CACHED_SETTINGS.lock().unwrap();
+        if let Some(settings) = cache.as_ref() {
+            return Ok(settings.clone());
+        }
+    }
+    
+    // 缓存未命中，从磁盘加载
     let path = get_settings_path();
     
     if !path.exists() {
         let settings = AppSettings::default();
-        save_settings(&settings)?;
+        save_settings_internal(&settings)?;
+        // 更新缓存
+        let mut cache = CACHED_SETTINGS.lock().unwrap();
+        *cache = Some(settings.clone());
         return Ok(settings);
     }
     
@@ -39,10 +58,14 @@ pub fn load_settings() -> Result<AppSettings, String> {
     let settings: AppSettings = serde_json::from_str(&content)
         .map_err(|e| format!("设置文件格式错误: {}", e))?;
     
+    // 更新缓存
+    let mut cache = CACHED_SETTINGS.lock().unwrap();
+    *cache = Some(settings.clone());
+    
     Ok(settings)
 }
 
-pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
+fn save_settings_internal(settings: &AppSettings) -> Result<(), String> {
     let path = get_settings_path();
     
     if let Some(parent) = path.parent() {
@@ -56,6 +79,14 @@ pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     fs::write(&path, content)
         .map_err(|e| format!("无法写入设置文件: {}", e))?;
     
+    Ok(())
+}
+
+pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
+    save_settings_internal(settings)?;
+    // 更新缓存
+    let mut cache = CACHED_SETTINGS.lock().unwrap();
+    *cache = Some(settings.clone());
     Ok(())
 }
 

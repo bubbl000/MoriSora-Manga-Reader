@@ -1,0 +1,100 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Instant;
+use lazy_static::lazy_static;
+use std::fs;
+
+struct CachedZip {
+    data: Vec<u8>,
+    last_accessed: Instant,
+}
+
+struct CachedCbr {
+    entries: HashMap<String, Vec<u8>>,
+    last_accessed: Instant,
+}
+
+lazy_static! {
+    static ref ZIP_CACHE: Mutex<HashMap<String, CachedZip>> = Mutex::new(HashMap::new());
+    static ref CBR_CACHE: Mutex<HashMap<String, CachedCbr>> = Mutex::new(HashMap::new());
+}
+
+pub fn get_or_load_zip(path: &str) -> Result<Vec<u8>, String> {
+    {
+        let cache = ZIP_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get(path) {
+            return Ok(cached.data.clone());
+        }
+    }
+    
+    let data = fs::read(path).map_err(|e| format!("无法打开CBZ文件 {}: {}", path, e))?;
+    
+    {
+        let mut cache = ZIP_CACHE.lock().unwrap();
+        if cache.len() >= 50 {
+            let oldest = cache.iter()
+                .min_by_key(|(_, v)| v.last_accessed)
+                .map(|(k, _)| k.clone());
+            if let Some(key) = oldest {
+                cache.remove(&key);
+            }
+        }
+        cache.insert(path.to_string(), CachedZip {
+            data: data.clone(),
+            last_accessed: Instant::now(),
+        });
+    }
+    
+    Ok(data)
+}
+
+pub fn get_or_extract_cbr(path: &str) -> Result<HashMap<String, Vec<u8>>, String> {
+    {
+        let cache = CBR_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get(path) {
+            return Ok(cached.entries.clone());
+        }
+    }
+    
+    use unrar::Archive;
+    let mut archive = Archive::new(path)
+        .open_for_processing()
+        .map_err(|e| format!("无法打开CBR文件 {}: {}", path, e))?;
+    
+    let mut entries = HashMap::new();
+    
+    loop {
+        let Some(before_file) = archive
+            .read_header()
+            .map_err(|e| format!("读取CBR头失败 {}: {}", path, e))?
+        else {
+            break;
+        };
+
+        let current_name = before_file.entry().filename.to_string_lossy().replace('\\', "/");
+        let (data, after_read) = before_file
+            .read()
+            .map_err(|e| format!("读取CBR条目失败 {}: {}", current_name, e))?;
+        
+        entries.insert(current_name, data);
+        archive = after_read;
+    }
+    
+    {
+        let mut cache = CBR_CACHE.lock().unwrap();
+        if cache.len() >= 10 {
+            let oldest = cache.iter()
+                .min_by_key(|(_, v)| v.last_accessed)
+                .map(|(k, _)| k.clone());
+            if let Some(key) = oldest {
+                cache.remove(&key);
+            }
+        }
+        cache.insert(path.to_string(), CachedCbr {
+            entries: entries.clone(),
+            last_accessed: Instant::now(),
+        });
+    }
+    
+    Ok(entries)
+}

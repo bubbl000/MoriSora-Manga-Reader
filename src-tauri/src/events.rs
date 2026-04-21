@@ -1,9 +1,8 @@
 use tauri::{AppHandle, Emitter};
 
 pub fn emit_event<T: serde::Serialize>(app: &AppHandle, event: &str, payload: &T) {
-    app.emit(event, payload).unwrap_or_else(|e| {
-        eprintln!("Failed to emit event {}: {}", event, e);
-    });
+    // 静默忽略事件发射失败（如前端已卸载），避免大量错误日志拖慢 I/O
+    let _ = app.emit(event, payload);
 }
 
 pub fn emit_scan_progress(app: &AppHandle, status: &str, message: &str, progress: Option<f64>) {

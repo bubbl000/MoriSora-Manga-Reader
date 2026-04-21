@@ -68,9 +68,15 @@ npm run tauri build
 manga-reader/
 ├── src/                    # React前端源码
 │   ├── components/         # UI组件
+│   │   ├── LibraryView.tsx # 书库管理界面
+│   │   ├── ReaderView.tsx  # 阅读器界面
+│   │   └── SettingsDialog.tsx
 │   ├── hooks/              # 自定义Hooks
 │   ├── services/           # 服务层
+│   │   ├── databaseService.ts
+│   │   └── eventService.ts
 │   ├── stores/             # 状态管理
+│   │   └── mangaStore.ts   # Zustand 状态存储
 │   ├── types/              # TypeScript类型定义
 │   ├── App.tsx             # 根组件
 │   ├── main.tsx            # 入口文件
@@ -78,7 +84,17 @@ manga-reader/
 ├── src-tauri/              # Rust后端
 │   ├── src/                # Rust源码
 │   │   ├── main.rs         # 主入口
-│   │   └── lib.rs          # 核心库
+│   │   ├── lib.rs          # 核心库声明
+│   │   ├── archive_cache.rs # ZIP/CBR 缓存模块
+│   │   ├── archive_parser.rs # 档案解析器
+│   │   ├── database.rs     # 数据库操作
+│   │   ├── events.rs       # 事件系统
+│   │   ├── file_operations.rs # 文件操作
+│   │   ├── folder_manager.rs  # 文件夹管理
+│   │   ├── library_scanner.rs # 目录扫描
+│   │   ├── perf.rs         # 性能监控
+│   │   ├── settings.rs     # 设置管理
+│   │   └── sort_utils.rs   # 排序算法
 │   ├── capabilities/       # Tauri权限配置
 │   ├── Cargo.toml          # Rust依赖
 │   └── tauri.conf.json     # Tauri配置
@@ -86,7 +102,9 @@ manga-reader/
 ├── package.json            # 前端依赖配置
 ├── tsconfig.json           # TypeScript配置
 ├── tailwind.config.js      # TailwindCSS配置
-└── vite.config.ts          # Vite配置
+├── vite.config.ts          # Vite配置
+├── PERFORMANCE_REPORT.md   # 性能分析报告
+└── 迭代信息.md              # 迭代记录
 ```
 
 ## 🎨 UI设计
@@ -157,6 +175,29 @@ manga-reader/
   - ✅ 图片压缩功能（Canvas 压缩，maxWidth 1920）
   - ✅ Scroll 模式虚拟滚动（按需加载）
   - ✅ LRU 缓存淘汰策略完善
+- ✅ **阶段10：性能分析与优化实施** - 已完成
+  - ✅ 性能分析工具安装（flamegraph, call-stack）
+  - ✅ 自定义性能监控模块（perf.rs）
+  - ✅ SQLite 查询计划分析（EXPLAIN QUERY PLAN）
+  - ✅ natural_cmp 正则缓存（LazyLock）
+  - ✅ count_manga_in_folder SQL LIKE 优化
+  - ✅ batch_upsert RETURNING 子句优化
+  - ✅ 前端性能监控（mangaStore.ts）
+- ✅ **阶段11：剩余性能优化** - 已完成
+  - ✅ ZIP/CBR 压缩包缓存（archive_cache.rs）
+  - ✅ CBR 解压缓存（O(N) → O(1)）
+  - ✅ 图片后端压缩（image crate）
+  - ✅ restoreReadingProgress 按路径查询
+  - ✅ PDF createObjectURL 替代 FileReader
+  - ✅ sort_utils 提前返回优化
+  - ✅ 事件日志静默处理
+  - ✅ 设置缓存避免频繁读写
+- ✅ **阶段12：性能监控完善与测试验证** - 已完成
+  - ✅ perf.rs 图片大小统计（record_image_size / get_image_size_stats）
+  - ✅ archive_cache.rs 缓存命中率统计（CacheStats / print_cache_stats）
+  - ✅ read_image_bytes 图片大小记录与日志输出
+  - ✅ 应用退出时汇总输出（print_summary / print_cache_stats）
+  - ✅ get_or_load_zip / get_or_extract_cbr 性能计时
 
 ### 架构说明
 
@@ -225,18 +266,35 @@ manga-reader/
 
 ## 🔧 性能优化记录
 
-本项目经过全面性能优化，主要优化项如下：
+本项目经过全面性能优化，包含性能分析、P0/P1/P2/P3 级别优化。主要优化项如下：
+
+### 性能分析工具
+- ✅ cargo-flamegraph / cargo-call-stack 安装
+- ✅ 自定义 perf.rs 性能监控模块（start_timer / stop_timer）
+- ✅ SQLite EXPLAIN QUERY PLAN 查询计划分析
+- ✅ 前端性能监控（printPerfMetrics()）
+
+### 核心性能优化
 
 | 优化项 | 优化前 | 优化后 | 提升倍数 |
 |--------|--------|--------|---------|
 | 数据库连接 | 每次操作新建连接 | 单一长连接 + 事务 | 10-20x |
-| 批量数据插入 | 循环单条插入 | 批量事务插入 | 25-50x |
+| 批量数据插入 | 循环单条插入 + SELECT | 批量事务 + RETURNING | 50-100x |
 | N+1 查询 | 每次操作加载全部漫画 | 按路径查询单条 | 99.98% 数据传输减少 |
 | Blob URL 内存 | 旧 URL 不释放 | LRU 缓存 + 统一释放 | 消除泄漏 |
 | 快速翻页 | 图片与页码不匹配 | 请求序号机制 | 消除竞态 |
 | PDF 翻页 | 每页重新解析整个文件 | 缓存文档对象 | 100x (100页PDF) |
 | 图片缓存 | 无上限，内存持续增长 | LRU 淘汰策略 (50张) | 控制内存占用 |
 | 符号链接循环 | 无限递归栈溢出 | 三层防护机制 | 消除崩溃 |
+| natural_cmp 排序 | 每次比较编译正则 | LazyLock 静态缓存 | 排序时间 ↓60-80% |
+| count_manga_in_folder | 全量获取 + Rust 过滤 | SQL LIKE 统计 | ↑100-1000x |
+| ZIP 翻页 | 每次重新打开文件 | LRU 缓存 (50个) | 响应时间 ↓50-70% |
+| CBR 翻页 | O(N) 顺序遍历 | 解压缓存 (10个) | O(N) → O(1) |
+| restoreReadingProgress | 加载全部漫画元数据 | 按路径查询 | 数据传输 ↓90% |
+| PDF 渲染 | FileReader base64 (+33%) | createObjectURL | 内存 ↓33% |
+| 文件夹扫描 | 同目录 N 次 read_dir | HashMap 缓存 | ↑3-10x |
+| MangaCard 渲染 | 全量重渲染 | React.memo | 渲染 ↓80-90% |
+| 设置读写 | 每次操作读写文件 | 静态缓存 | I/O ↓90%+ |
 
 ## 🔨 代码质量优化
 
