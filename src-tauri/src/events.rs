@@ -1,90 +1,106 @@
 use tauri::{AppHandle, Emitter};
+use serde::Serialize;
 
 pub fn emit_event<T: serde::Serialize>(app: &AppHandle, event: &str, payload: &T) {
-    // 静默忽略事件发射失败（如前端已卸载），避免大量错误日志拖慢 I/O
     let _ = app.emit(event, payload);
+}
+
+#[derive(Serialize)]
+struct ScanProgressPayload<'a> {
+    status: &'a str,
+    message: &'a str,
+    progress: Option<f64>,
 }
 
 pub fn emit_scan_progress(app: &AppHandle, status: &str, message: &str, progress: Option<f64>) {
     emit_event(
         app,
         "scan_progress",
-        &serde_json::json!({
-            "status": status,
-            "message": message,
-            "progress": progress,
-        }),
+        &ScanProgressPayload { status, message, progress },
     );
 }
 
+#[derive(Serialize)]
+struct EmptyPayload {}
+
 pub fn emit_library_updated(app: &AppHandle) {
-    emit_event(app, "library_updated", &serde_json::json!({}));
+    emit_event(app, "library_updated", &EmptyPayload {});
+}
+
+#[derive(Serialize)]
+struct PathPayload<'a> {
+    path: &'a str,
 }
 
 pub fn emit_path_added(app: &AppHandle, path: &str) {
-    emit_event(
-        app,
-        "path_added",
-        &serde_json::json!({ "path": path }),
-    );
+    emit_event(app, "path_added", &PathPayload { path });
 }
 
 pub fn emit_path_removed(app: &AppHandle, path: &str) {
-    emit_event(
-        app,
-        "path_removed",
-        &serde_json::json!({ "path": path }),
-    );
+    emit_event(app, "path_removed", &PathPayload { path });
+}
+
+#[derive(Serialize)]
+struct ReadingProgressPayload {
+    comic_id: i64,
+    page: i64,
 }
 
 pub fn emit_reading_progress_saved(app: &AppHandle, comic_id: i64, page: i64) {
     emit_event(
         app,
         "reading_progress_saved",
-        &serde_json::json!({
-            "comic_id": comic_id,
-            "page": page,
-        }),
+        &ReadingProgressPayload { comic_id, page },
     );
+}
+
+#[derive(Serialize)]
+struct FavoritePayload {
+    comic_id: i64,
+    is_favorite: bool,
 }
 
 pub fn emit_favorite_toggled(app: &AppHandle, comic_id: i64, is_favorite: bool) {
     emit_event(
         app,
         "favorite_toggled",
-        &serde_json::json!({
-            "comic_id": comic_id,
-            "is_favorite": is_favorite,
-        }),
+        &FavoritePayload { comic_id, is_favorite },
     );
+}
+
+#[derive(Serialize)]
+struct TagAddedPayload<'a> {
+    comic_id: i64,
+    tag_name: &'a str,
 }
 
 pub fn emit_tag_added(app: &AppHandle, comic_id: i64, tag_name: &str) {
     emit_event(
         app,
         "tag_added",
-        &serde_json::json!({
-            "comic_id": comic_id,
-            "tag_name": tag_name,
-        }),
+        &TagAddedPayload { comic_id, tag_name },
     );
+}
+
+#[derive(Serialize)]
+struct TagRemovedPayload {
+    comic_id: i64,
+    tag_id: i64,
 }
 
 pub fn emit_tag_removed(app: &AppHandle, comic_id: i64, tag_id: i64) {
     emit_event(
         app,
         "tag_removed",
-        &serde_json::json!({
-            "comic_id": comic_id,
-            "tag_id": tag_id,
-        }),
+        &TagRemovedPayload { comic_id, tag_id },
     );
 }
 
+#[derive(Serialize)]
+struct ErrorPayload<'a> {
+    message: &'a str,
+}
+
 pub fn emit_error(app: &AppHandle, message: &str) {
-    emit_event(
-        app,
-        "error",
-        &serde_json::json!({ "message": message }),
-    );
+    emit_event(app, "error", &ErrorPayload { message });
 }

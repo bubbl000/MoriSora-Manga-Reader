@@ -119,16 +119,16 @@ function buildFolderTree(paths: string[], mangaList: MangaItem[], allFolderPaths
   const nodes: FolderNode[] = []
   const pathToNode = new Map<string, FolderNode>()
   
-  const validFolders = Array.from(folderSet)
+  // 预计算深度值，避免 sort 中重复 split
+  const foldersWithDepth = Array.from(folderSet)
     .filter(f => f.startsWith(rootName) && f !== rootName)
+    .map(f => ({ path: f, depth: f.split(/[\\/]/).length }))
     .sort((a, b) => {
-      const aDepth = a.split(/[\\/]/).length
-      const bDepth = b.split(/[\\/]/).length
-      if (aDepth !== bDepth) return aDepth - bDepth
-      return a.localeCompare(b)
+      if (a.depth !== b.depth) return a.depth - b.depth
+      return a.path.localeCompare(b.path)
     })
   
-  validFolders.forEach(folderPath => {
+  foldersWithDepth.forEach(({ path: folderPath }) => {
     const relativePath = folderPath.substring(rootName.length).replace(/^[\\/]/, '')
     const parts = relativePath.split(/[\\/]/)
     const folderName = parts[parts.length - 1]

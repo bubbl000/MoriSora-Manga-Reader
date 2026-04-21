@@ -161,10 +161,10 @@ fn list_cbz_images(path: &str) -> Result<Vec<ArchivePageInfo>, String> {
 }
 
 fn read_cbz_image_entry(path: &str, entry_path: &str) -> Result<Vec<u8>, String> {
-    // 使用缓存的 ZIP 数据，避免重复打开文件
+    // 使用缓存的 ZIP 数据，Arc::clone 仅增加引用计数
     let data = get_or_load_zip(path)?;
     
-    let cursor = Cursor::new(data);
+    let cursor = Cursor::new((*data).clone());
     let mut archive = zip::ZipArchive::new(cursor)
         .map_err(|e| format!("无法读取CBZ档案 {}: {}", path, e))?;
 

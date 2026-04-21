@@ -31,11 +31,8 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
                 let a_before = &a[a_pos..am.start()];
                 let b_before = &b[b_pos..bm.start()];
 
-                // 惰性小写转换：仅在需要时才创建小写字符串
                 if a_before != b_before {
-                    let a_lower = a.to_ascii_lowercase();
-                    let b_lower = b.to_ascii_lowercase();
-                    return a_lower.cmp(&b_lower);
+                    return a_before.cmp(b_before);
                 }
 
                 let a_num = am.as_str();
@@ -53,9 +50,9 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
                 b_pos = bm.end();
             }
             _ => {
-                let a_lower = a.to_ascii_lowercase();
-                let b_lower = b.to_ascii_lowercase();
-                return a_lower.cmp(&b_lower);
+                let a_remaining = &a[a_pos..];
+                let b_remaining = &b[b_pos..];
+                return a_remaining.cmp(b_remaining);
             }
         }
     }

@@ -1,16 +1,16 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use lazy_static::lazy_static;
 use std::fs;
 
 struct CachedZip {
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
     last_accessed: Instant,
 }
 
 struct CachedCbr {
-    entries: HashMap<String, Vec<u8>>,
+    entries: Arc<HashMap<String, Vec<u8>>>,
     last_accessed: Instant,
 }
 
@@ -19,15 +19,15 @@ lazy_static! {
     static ref CBR_CACHE: Mutex<HashMap<String, CachedCbr>> = Mutex::new(HashMap::new());
 }
 
-pub fn get_or_load_zip(path: &str) -> Result<Vec<u8>, String> {
+pub fn get_or_load_zip(path: &str) -> Result<Arc<Vec<u8>>, String> {
     {
         let cache = ZIP_CACHE.lock().unwrap();
         if let Some(cached) = cache.get(path) {
-            return Ok(cached.data.clone());
+            return Ok(Arc::clone(&cached.data));
         }
     }
     
-    let data = fs::read(path).map_err(|e| format!("无法打开CBZ文件 {}: {}", path, e))?;
+    let data = Arc::new(fs::read(path).map_err(|e| format!("无法打开CBZ文件 {}: {}", path, e))?);
     
     {
         let mut cache = ZIP_CACHE.lock().unwrap();
@@ -40,7 +40,7 @@ pub fn get_or_load_zip(path: &str) -> Result<Vec<u8>, String> {
             }
         }
         cache.insert(path.to_string(), CachedZip {
-            data: data.clone(),
+            data: Arc::clone(&data),
             last_accessed: Instant::now(),
         });
     }
@@ -48,11 +48,11 @@ pub fn get_or_load_zip(path: &str) -> Result<Vec<u8>, String> {
     Ok(data)
 }
 
-pub fn get_or_extract_cbr(path: &str) -> Result<HashMap<String, Vec<u8>>, String> {
+pub fn get_or_extract_cbr(path: &str) -> Result<Arc<HashMap<String, Vec<u8>>>, String> {
     {
         let cache = CBR_CACHE.lock().unwrap();
         if let Some(cached) = cache.get(path) {
-            return Ok(cached.entries.clone());
+            return Ok(Arc::clone(&cached.entries));
         }
     }
     
@@ -80,6 +80,8 @@ pub fn get_or_extract_cbr(path: &str) -> Result<HashMap<String, Vec<u8>>, String
         archive = after_read;
     }
     
+    let entries = Arc::new(entries);
+    
     {
         let mut cache = CBR_CACHE.lock().unwrap();
         if cache.len() >= 10 {
@@ -91,7 +93,7 @@ pub fn get_or_extract_cbr(path: &str) -> Result<HashMap<String, Vec<u8>>, String
             }
         }
         cache.insert(path.to_string(), CachedCbr {
-            entries: entries.clone(),
+            entries: Arc::clone(&entries),
             last_accessed: Instant::now(),
         });
     }

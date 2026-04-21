@@ -29,7 +29,6 @@ fn compress_image_bytes(data: &[u8], max_width: u32, quality: u8) -> Result<Vec<
     let img = image::load_from_memory(data)
         .map_err(|e| format!("图片解码失败: {}", e))?;
     
-    // 如果图片超过最大宽度，进行缩放
     let (w, h) = img.dimensions();
     let img = if w > max_width {
         let ratio = max_width as f32 / w as f32;
@@ -39,8 +38,9 @@ fn compress_image_bytes(data: &[u8], max_width: u32, quality: u8) -> Result<Vec<
         img
     };
     
-    // 编码为 JPEG
-    let mut output = Vec::new();
+    // 预分配输出 Vec，JPEG 压缩通常约为原始大小的 30-70%
+    let estimated_size = (data.len() as f32 * 0.5) as usize;
+    let mut output = Vec::with_capacity(estimated_size.max(1024));
     let mut cursor = IoCursor::new(&mut output);
     img.write_to(&mut cursor, image::ImageFormat::Jpeg)
         .map_err(|e| format!("图片编码失败: {}", e))?;
