@@ -11,7 +11,6 @@ static NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)").unwrap
 /// 自然排序比较函数
 /// 例如: "chapter1" < "chapter2" < "chapter10"
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    // 先比较原始字符串，如果相等则直接返回，避免分配
     if a == b {
         return Ordering::Equal;
     }
@@ -19,14 +18,6 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     let re = &*NUMBER_RE;
     let mut a_parts = re.find_iter(a);
     let mut b_parts = re.find_iter(b);
-
-    // 延迟分配 lowercase，只在需要时创建
-    let a_lower = a.to_ascii_lowercase();
-    let b_lower = b.to_ascii_lowercase();
-
-    if a_lower == b_lower {
-        return a.cmp(b);
-    }
 
     let mut a_pos = 0;
     let mut b_pos = 0;
@@ -37,10 +28,13 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
 
         match (a_match, b_match) {
             (Some(am), Some(bm)) => {
-                let a_before = &a_lower[a_pos..am.start()];
-                let b_before = &b_lower[b_pos..bm.start()];
+                let a_before = &a[a_pos..am.start()];
+                let b_before = &b[b_pos..bm.start()];
 
+                // 惰性小写转换：仅在需要时才创建小写字符串
                 if a_before != b_before {
+                    let a_lower = a.to_ascii_lowercase();
+                    let b_lower = b.to_ascii_lowercase();
                     return a_lower.cmp(&b_lower);
                 }
 
@@ -58,7 +52,11 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
                 a_pos = am.end();
                 b_pos = bm.end();
             }
-            _ => return a_lower.cmp(&b_lower),
+            _ => {
+                let a_lower = a.to_ascii_lowercase();
+                let b_lower = b.to_ascii_lowercase();
+                return a_lower.cmp(&b_lower);
+            }
         }
     }
 }

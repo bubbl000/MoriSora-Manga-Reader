@@ -40,8 +40,13 @@ fn extension_of(path: &Path) -> Option<String> {
 }
 
 fn is_image_entry_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(&format!(".{}", ext)))
+    // 直接提取扩展名进行比较，避免分配完整的小写字符串
+    if let Some(dot_pos) = name.rfind('.') {
+        let ext = &name[dot_pos + 1..];
+        IMAGE_EXTENSIONS.iter().any(|&ie| ext.eq_ignore_ascii_case(ie))
+    } else {
+        false
+    }
 }
 
 fn get_file_name_from_path(path: &str) -> String {

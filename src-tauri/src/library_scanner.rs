@@ -37,8 +37,9 @@ pub fn scan_comic_directory(directory: &str) -> ScanResult {
     let mut comics = Vec::new();
     let mut visited = HashSet::new();
     let mut folder_cache = HashMap::new();
+    let mut added_image_folders = HashSet::new();
     
-    if let Err(e) = scan_directory_recursive(&path, &mut comics, &mut visited, &mut folder_cache, 0) {
+    if let Err(e) = scan_directory_recursive(&path, &mut comics, &mut visited, &mut folder_cache, &mut added_image_folders, 0) {
         return ScanResult {
             comics,
             error: Some(format!("扫描出错: {}", e)),
@@ -56,6 +57,7 @@ fn scan_directory_recursive(
     comics: &mut Vec<ComicCandidate>,
     visited: &mut HashSet<String>,
     folder_cache: &mut HashMap<PathBuf, bool>,
+    added_image_folders: &mut HashSet<PathBuf>,
     current_depth: usize,
 ) -> Result<(), String> {
     // Prevent stack overflow by limiting recursion depth
@@ -96,7 +98,7 @@ fn scan_directory_recursive(
         }
         
         if path.is_dir() {
-            scan_directory_recursive(&path, comics, visited, folder_cache, current_depth + 1)?;
+            scan_directory_recursive(&path, comics, visited, folder_cache, added_image_folders, current_depth + 1)?;
         } else if path.is_file() {
             if let Some(ext) = path.extension() {
                 let ext_lower = ext.to_string_lossy().to_lowercase();
@@ -124,9 +126,7 @@ fn scan_directory_recursive(
                         source_type: "pdf".to_string(),
                     });
                 } else if IMAGE_EXTENSIONS.contains(&ext_lower.as_str()) {
-                    // Check if this image is alone in its parent directory
                     let parent = path.parent().unwrap_or(Path::new("")).to_path_buf();
-                    // 使用缓存避免重复 read_dir
                     let has_comic_archive = if let Some(&cached) = folder_cache.get(&parent) {
                         cached
                     } else {
@@ -135,24 +135,19 @@ fn scan_directory_recursive(
                         result
                     };
                     
-                    if !has_comic_archive {
-                        // Check if we haven't already added this folder as an image folder
-                        let already_added = comics.iter().any(|c| {
-                            PathBuf::from(&c.path).parent() == Some(&parent) && c.source_type == "folder"
-                        });
+                    if !has_comic_archive && !added_image_folders.contains(&parent) {
+                        added_image_folders.insert(parent.clone());
                         
-                        if !already_added {
-                            let title = parent
-                                .file_name()
-                                .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            
-                            comics.push(ComicCandidate {
-                                path: parent.to_string_lossy().to_string(),
-                                title,
-                                source_type: "folder".to_string(),
-                            });
-                        }
+                        let title = parent
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        
+                        comics.push(ComicCandidate {
+                            path: parent.to_string_lossy().to_string(),
+                            title,
+                            source_type: "folder".to_string(),
+                        });
                     }
                 }
             }
@@ -194,11 +189,17 @@ pub fn get_folder_images(folder: &str) -> Vec<String> {
         }
     }
     
-    images.sort_by(|a, b| {
-        let filename_a = Path::new(a).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let filename_b = Path::new(b).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        natural_cmp(&filename_a, &filename_b)
-    });
+    // 预提取文件名，避免排序时重复调用 file_name() 创建字符串
+    let mut images_with_names: Vec<_> = images.into_iter()
+        .map(|p| {
+            let filename = Path::new(&p).file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            (p, filename)
+        })
+        .collect();
+    images_with_names.sort_by(|a, b| natural_cmp(&a.1, &b.1));
+    images = images_with_names.into_iter().map(|(p, _)| p).collect();
     
     images
 }

@@ -92,7 +92,6 @@ manga-reader/
 │   │   ├── file_operations.rs # 文件操作
 │   │   ├── folder_manager.rs  # 文件夹管理
 │   │   ├── library_scanner.rs # 目录扫描
-│   │   ├── perf.rs         # 性能监控
 │   │   ├── settings.rs     # 设置管理
 │   │   └── sort_utils.rs   # 排序算法
 │   ├── capabilities/       # Tauri权限配置
@@ -103,7 +102,6 @@ manga-reader/
 ├── tsconfig.json           # TypeScript配置
 ├── tailwind.config.js      # TailwindCSS配置
 ├── vite.config.ts          # Vite配置
-├── PERFORMANCE_REPORT.md   # 性能分析报告
 └── 迭代信息.md              # 迭代记录
 ```
 
@@ -176,13 +174,9 @@ manga-reader/
   - ✅ Scroll 模式虚拟滚动（按需加载）
   - ✅ LRU 缓存淘汰策略完善
 - ✅ **阶段10：性能分析与优化实施** - 已完成
-  - ✅ 性能分析工具安装（flamegraph, call-stack）
-  - ✅ 自定义性能监控模块（perf.rs）
-  - ✅ SQLite 查询计划分析（EXPLAIN QUERY PLAN）
-  - ✅ natural_cmp 正则缓存（LazyLock）
-  - ✅ count_manga_in_folder SQL LIKE 优化
-  - ✅ batch_upsert RETURNING 子句优化
-  - ✅ 前端性能监控（mangaStore.ts）
+  - ✅ P0 级别关键路径优化（N+1查询、批量插入、索引优化）
+  - ✅ P1 级别显著性能提升（ZIP/CBR缓存、图片压缩）
+  - ✅ P2/P3 级别微优化（React.memo、懒加载、代码分割）
 - ✅ **阶段11：剩余性能优化** - 已完成
   - ✅ ZIP/CBR 压缩包缓存（archive_cache.rs）
   - ✅ CBR 解压缓存（O(N) → O(1)）
@@ -192,12 +186,13 @@ manga-reader/
   - ✅ sort_utils 提前返回优化
   - ✅ 事件日志静默处理
   - ✅ 设置缓存避免频繁读写
-- ✅ **阶段12：性能监控完善与测试验证** - 已完成
-  - ✅ perf.rs 图片大小统计（record_image_size / get_image_size_stats）
-  - ✅ archive_cache.rs 缓存命中率统计（CacheStats / print_cache_stats）
-  - ✅ read_image_bytes 图片大小记录与日志输出
-  - ✅ 应用退出时汇总输出（print_summary / print_cache_stats）
-  - ✅ get_or_load_zip / get_or_extract_cbr 性能计时
+- ✅ **阶段12：循环优化与代码清理** - 已完成
+  - ✅ 移除所有性能分析代码（perf.rs、计时器、统计输出）
+  - ✅ library_scanner.rs HashSet 优化（O(n²) → O(n)）
+  - ✅ library_scanner.rs 排序预提取文件名
+  - ✅ archive_parser.rs is_image_entry_name 优化
+  - ✅ sort_utils.rs 惰性小写转换
+  - ✅ file_operations.rs 消除循环内重复计算
 
 ### 架构说明
 
@@ -266,13 +261,7 @@ manga-reader/
 
 ## 🔧 性能优化记录
 
-本项目经过全面性能优化，包含性能分析、P0/P1/P2/P3 级别优化。主要优化项如下：
-
-### 性能分析工具
-- ✅ cargo-flamegraph / cargo-call-stack 安装
-- ✅ 自定义 perf.rs 性能监控模块（start_timer / stop_timer）
-- ✅ SQLite EXPLAIN QUERY PLAN 查询计划分析
-- ✅ 前端性能监控（printPerfMetrics()）
+本项目经过全面性能优化，包含 P0/P1/P2/P3 级别优化和循环优化。主要优化项如下：
 
 ### 核心性能优化
 
