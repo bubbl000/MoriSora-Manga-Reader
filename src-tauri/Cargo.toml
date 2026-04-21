@@ -25,3 +25,10 @@ lazy_static = "1.5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com"] }
+
+[profile.release]
+opt-level = 3          # 最大优化
+lto = "thin"           # 链接时优化（thin 比 fat 编译快 30% 且性能差距 < 2%）
+codegen-units = 1      # 减少编译单元数以获得更好的优化
+panic = "abort"        # 减小二进制大小，Tauri 不需要 backtrace
+strip = "symbols"      # 剥离调试符号，减小 binary 大小

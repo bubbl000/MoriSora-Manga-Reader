@@ -12,20 +12,41 @@ mod settings;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use database::AppState;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use lazy_static::lazy_static;
 
 /// Maximum recursion depth to prevent stack overflow
 const MAX_RECURSION_DEPTH: usize = 20;
+const MAX_CACHE_SIZE: usize = 30;
 
 // 图片后端压缩功能
 use std::io::Cursor as IoCursor;
 use image::GenericImageView;
 
-/// 压缩图片以减少 IPC 传输
+/// 压缩图片缓存：缓存键为 "path:max_width:quality"
+lazy_static! {
+    static ref COMPRESSED_CACHE: Mutex<HashMap<String, Arc<Vec<u8>>>> = 
+        Mutex::new(HashMap::with_capacity(MAX_CACHE_SIZE));
+    static ref CACHE_ORDER: Mutex<Vec<String>> = Mutex::new(Vec::with_capacity(MAX_CACHE_SIZE));
+}
+
+/// 压缩图片并缓存结果
 /// 将图片缩放到最大宽度 1920px，质量 85%
-fn compress_image_bytes(data: &[u8], max_width: u32, quality: u8) -> Result<Vec<u8>, String> {
+fn compress_image_bytes(path: &str, data: &[u8], max_width: u32, quality: u8) -> Result<Arc<Vec<u8>>, String> {
+    let cache_key = format!("{}:{}:{}", path, max_width, quality);
+    
+    // 检查缓存
+    {
+        let cache = COMPRESSED_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get(&cache_key) {
+            return Ok(Arc::clone(cached));
+        }
+    }
+    
+    // 缓存未命中，执行压缩
     let img = image::load_from_memory(data)
         .map_err(|e| format!("图片解码失败: {}", e))?;
     
@@ -38,14 +59,32 @@ fn compress_image_bytes(data: &[u8], max_width: u32, quality: u8) -> Result<Vec<
         img
     };
     
-    // 预分配输出 Vec，JPEG 压缩通常约为原始大小的 30-70%
     let estimated_size = (data.len() as f32 * 0.5) as usize;
     let mut output = Vec::with_capacity(estimated_size.max(1024));
     let mut cursor = IoCursor::new(&mut output);
     img.write_to(&mut cursor, image::ImageFormat::Jpeg)
         .map_err(|e| format!("图片编码失败: {}", e))?;
     
-    Ok(output)
+    let result = Arc::new(output);
+    
+    // 存入缓存
+    {
+        let mut cache = COMPRESSED_CACHE.lock().unwrap();
+        let mut order = CACHE_ORDER.lock().unwrap();
+        
+        // LRU 淘汰：如果缓存已满，移除最旧的
+        if cache.len() >= MAX_CACHE_SIZE {
+            if let Some(oldest) = order.first().cloned() {
+                cache.remove(&oldest);
+                order.remove(0);
+            }
+        }
+        
+        cache.insert(cache_key.clone(), Arc::clone(&result));
+        order.push(cache_key);
+    }
+    
+    Ok(result)
 }
 
 #[tauri::command]

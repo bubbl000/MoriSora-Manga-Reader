@@ -39,6 +39,7 @@ fn extension_of(path: &Path) -> Option<String> {
         })
 }
 
+#[inline]
 fn is_image_entry_name(name: &str) -> bool {
     // 直接提取扩展名进行比较，避免分配完整的小写字符串
     if let Some(dot_pos) = name.rfind('.') {

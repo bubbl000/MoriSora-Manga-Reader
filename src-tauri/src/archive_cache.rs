@@ -21,8 +21,9 @@ lazy_static! {
 
 pub fn get_or_load_zip(path: &str) -> Result<Arc<Vec<u8>>, String> {
     {
-        let cache = ZIP_CACHE.lock().unwrap();
-        if let Some(cached) = cache.get(path) {
+        let mut cache = ZIP_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get_mut(path) {
+            cached.last_accessed = Instant::now();
             return Ok(Arc::clone(&cached.data));
         }
     }
@@ -31,7 +32,8 @@ pub fn get_or_load_zip(path: &str) -> Result<Arc<Vec<u8>>, String> {
     
     {
         let mut cache = ZIP_CACHE.lock().unwrap();
-        if cache.len() >= 50 {
+        // LRU 淘汰：移除到上限以下
+        while cache.len() >= 50 {
             let oldest = cache.iter()
                 .min_by_key(|(_, v)| v.last_accessed)
                 .map(|(k, _)| k.clone());
@@ -50,8 +52,9 @@ pub fn get_or_load_zip(path: &str) -> Result<Arc<Vec<u8>>, String> {
 
 pub fn get_or_extract_cbr(path: &str) -> Result<Arc<HashMap<String, Vec<u8>>>, String> {
     {
-        let cache = CBR_CACHE.lock().unwrap();
-        if let Some(cached) = cache.get(path) {
+        let mut cache = CBR_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get_mut(path) {
+            cached.last_accessed = Instant::now();
             return Ok(Arc::clone(&cached.entries));
         }
     }

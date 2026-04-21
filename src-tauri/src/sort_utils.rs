@@ -10,6 +10,7 @@ static NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)").unwrap
 
 /// 自然排序比较函数
 /// 例如: "chapter1" < "chapter2" < "chapter10"
+#[inline]
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     if a == b {
         return Ordering::Equal;
