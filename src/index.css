@@ -48,3 +48,51 @@ button {
 ::-webkit-scrollbar-thumb:hover {
   background: #444444;
 }
+
+/* ZoomSlider 组件样式 - 符合项目规范 */
+input.zoom-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 90px;
+  height: 3px;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+}
+
+/* 滑块轨道 - 使用线性渐变实现左右两部分 */
+input.zoom-slider::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 3px;
+  border-radius: 1.5px;
+  background: linear-gradient(to right, #CBE93A var(--slider-fill, 0%), #363636 var(--slider-fill, 0%));
+}
+
+input.zoom-slider::-moz-range-track {
+  width: 100%;
+  height: 3px;
+  border-radius: 1.5px;
+  background: linear-gradient(to right, #CBE93A var(--slider-fill, 0%), #363636 var(--slider-fill, 0%));
+}
+
+/* 滑块拇指 - 12px圆形，#CBE93A填充，#1A1A1A边框 */
+input.zoom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #CBE93A;
+  border: 2px solid #1A1A1A;
+  margin-top: -4.5px; /* 居中：(12-3)/2 = 4.5 */
+  cursor: pointer;
+}
+
+input.zoom-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #CBE93A;
+  border: 2px solid #1A1A1A;
+  cursor: pointer;
+}

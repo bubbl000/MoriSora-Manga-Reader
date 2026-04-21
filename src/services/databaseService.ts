@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { SourceType } from '../types/sourceType'
 
 export interface ComicMetadata {
   id?: number
@@ -32,8 +33,20 @@ export const saveComicMetadata = async (comic: ComicMetadata): Promise<number> =
   return await invoke<number>('save_comic_metadata', { comic })
 }
 
+export const batchSaveComicMetadata = async (comics: ComicMetadata[]): Promise<number[]> => {
+  return await invoke<number[]>('batch_save_comic_metadata', { comics })
+}
+
 export const getAllComicsMetadata = async (): Promise<ComicMetadata[]> => {
   return await invoke<ComicMetadata[]>('get_all_comics_metadata')
+}
+
+export const getComicIdByPath = async (path: string): Promise<number | null> => {
+  return await invoke<number | null>('get_comic_id_by_path', { path })
+}
+
+export const getComicByPath = async (path: string): Promise<ComicMetadata | null> => {
+  return await invoke<ComicMetadata | null>('get_comic_by_path', { path })
 }
 
 export const updateComicLastOpened = async (comicId: number): Promise<void> => {

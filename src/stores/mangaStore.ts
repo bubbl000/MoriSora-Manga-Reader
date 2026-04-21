@@ -1,7 +1,8 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { saveComicMetadata, ComicMetadata, ReadingProgress, Tag } from '../services/databaseService'
+import { saveComicMetadata, batchSaveComicMetadata, getComicIdByPath, getComicByPath, ComicMetadata, ReadingProgress, Tag } from '../services/databaseService'
+import { SourceType, isValidSourceType, getSourceTypeDisplayName, inferSourceType } from '../types/sourceType'
 
 // 全局拖拽文件回调
 let globalDropCallback: ((paths: string[]) => void) | null = null
@@ -38,7 +39,7 @@ export interface MangaItem {
   title: string
   path: string
   folderPath: string
-  sourceType: string
+  sourceType: SourceType
   isFavorite: boolean
   currentPage: number
   totalPages: number
@@ -79,7 +80,7 @@ interface MangaStore {
 
   loadLibrary: () => Promise<void>
   addLibraryPath: (path: string) => Promise<void>
-  removeLibraryPath: (index: number) => Promise<void>
+  removeLibraryPath: (path: string) => Promise<void>
   scanAndLoad: () => Promise<void>
   saveToDatabase: (manga: MangaItem) => Promise<void>
   updateReadingProgress: (mangaId: string, currentPage: number, totalPages: number) => Promise<void>
@@ -169,6 +170,128 @@ function buildFolderTree(paths: string[], mangaList: MangaItem[], allFolderPaths
   }]
 }
 
+interface ScanAndBuildParams {
+  paths: string[]
+  setLoading: (loading: boolean) => void
+  onComplete: () => void
+}
+
+interface ScanBuildResult {
+  mangaList: MangaItem[]
+  comicMetadataList: ComicMetadata[]
+  folderTree: FolderNode[]
+  totalCount: number
+  totalPages: number
+  pagedMangaList: MangaItem[]
+}
+
+async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBuildResult> {
+  const { paths, setLoading, onComplete } = params
+  setLoading(true)
+
+  try {
+    const allManga: MangaItem[] = []
+    const allComics: ComicMetadata[] = []
+    let id = 1
+
+    for (const path of paths) {
+      try {
+        const result = await invoke<{
+          comics: Array<{ path: string; title: string; source_type: string }>
+          error: string | null
+        }>('scan_directory', { directory: path })
+
+        if (result.comics) {
+          for (const comic of result.comics) {
+            const folderPath =
+              comic.source_type === 'folder'
+                ? comic.path
+                : comic.path.substring(0, Math.max(comic.path.lastIndexOf('\\'), comic.path.lastIndexOf('/')))
+
+            const formatText =
+              comic.source_type === 'folder'
+                ? '文件夹'
+                : comic.source_type === 'pdf'
+                ? 'PDF'
+                : comic.source_type.toUpperCase()
+
+            const mangaItem: MangaItem = {
+              id: String(id++),
+              title: comic.title,
+              path: comic.path,
+              folderPath,
+              sourceType: comic.source_type,
+              isFavorite: false,
+              currentPage: 0,
+              totalPages: 0,
+              addedDate: new Date().toISOString(),
+              lastOpened: '',
+              formatText,
+              fileSizeText: '',
+              progressPercentage: 0,
+              coverThumbnail: null,
+            }
+            allManga.push(mangaItem)
+
+            allComics.push({
+              path: comic.path,
+              title: comic.title,
+              source_type: comic.source_type,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+          }
+        }
+      } catch (e) {
+        console.error(`扫描目录 ${path} 失败:`, e)
+        set({ error: `扫描目录 "${path}" 失败: ${e}` })
+      }
+    }
+
+    if (allComics.length > 0) {
+      await batchSaveComicMetadata(allComics)
+    }
+
+    let allSubfolders: string[] = []
+    if (paths.length > 0) {
+      try {
+        allSubfolders = await invoke<string[]>('get_all_subfolders', { rootPath: paths[0] })
+      } catch (e) {
+        console.error('获取子文件夹列表失败:', e)
+        set({ error: '获取子文件夹列表失败' })
+      }
+    }
+
+    const folderTree = buildFolderTree(paths, allManga, allSubfolders)
+
+    const favComics = await invoke<ComicMetadata[]>('get_favorite_comics')
+    const favPaths = new Set(favComics.map(c => c.path))
+    const updatedManga = allManga.map(m => ({
+      ...m,
+      isFavorite: favPaths.has(m.path),
+    }))
+
+    const totalCount = updatedManga.length
+    const totalPages = Math.max(1, Math.ceil(totalCount / 50))
+    const paged = updatedManga.slice(0, 50)
+
+    setLoading(false)
+    onComplete()
+
+    return {
+      mangaList: updatedManga,
+      comicMetadataList: allComics,
+      folderTree,
+      totalCount,
+      totalPages,
+      pagedMangaList: paged,
+    }
+  } catch (e) {
+    setLoading(false)
+    throw e
+  }
+}
+
 export const useMangaStore = create<MangaStore>((set, get) => ({
   mangaList: [],
   filteredMangaList: [],
@@ -207,77 +330,22 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
         set({ selectedFolder: paths[0], selectedFolderName: paths[0] })
       }
 
-      const allManga: MangaItem[] = []
-      let id = 1
+      const result = await scanAndBuildMangaList({
+        paths,
+        setLoading: (loading) => set({ isLoading: loading }),
+        onComplete: () => get().loadAllTags(),
+      })
 
-      for (const path of paths) {
-        try {
-          const result = await invoke<{ comics: Array<{ path: string; title: string; source_type: string }>; error: string | null }>('scan_directory', { directory: path })
-          
-          if (result.comics) {
-            for (const comic of result.comics) {
-              const folderPath = comic.source_type === 'folder' ? comic.path : comic.path.substring(0, Math.max(comic.path.lastIndexOf('\\'), comic.path.lastIndexOf('/')))
-              
-              const formatText = comic.source_type === 'folder' ? '文件夹' : comic.source_type === 'pdf' ? 'PDF' : comic.source_type.toUpperCase()
-              
-              const mangaItem: MangaItem = {
-                id: String(id++),
-                title: comic.title,
-                path: comic.path,
-                folderPath,
-                sourceType: comic.source_type,
-                isFavorite: false,
-                currentPage: 0,
-                totalPages: 0,
-                addedDate: new Date().toISOString(),
-                lastOpened: '',
-                formatText,
-                fileSizeText: '',
-                progressPercentage: 0,
-                coverThumbnail: null,
-              }
-              allManga.push(mangaItem)
-              await get().saveToDatabase(mangaItem)
-            }
-          }
-        } catch (e) {
-          console.error(`扫描目录 ${path} 失败:`, e)
-        }
-      }
-
-      let allSubfolders: string[] = []
-      try {
-        allSubfolders = await invoke<string[]>('get_all_subfolders', { rootPath: paths[0] })
-      } catch (e) {
-        console.error('获取文件夹列表失败:', e)
-      }
-
-      const folderTree = buildFolderTree(paths, allManga, allSubfolders)
-      
-      // Load favorites status from DB
-      const favComics = await invoke<ComicMetadata[]>('get_favorite_comics')
-      const favPaths = new Set(favComics.map(c => c.path))
-      const updatedManga = allManga.map(m => ({
-        ...m,
-        isFavorite: favPaths.has(m.path),
-      }))
-      
-      const filtered = updatedManga
-      const totalCount = updatedManga.length
-      const totalPages = Math.max(1, Math.ceil(totalCount / 50))
-      const paged = filtered.slice(0, 50)
-      
       set({ 
-        mangaList: updatedManga, 
-        filteredMangaList: filtered,
-        pagedMangaList: paged,
-        folderTree,
-        totalCount,
-        totalFilteredCount: totalCount,
-        totalPages,
+        mangaList: result.mangaList, 
+        filteredMangaList: result.mangaList,
+        pagedMangaList: result.pagedMangaList,
+        folderTree: result.folderTree,
+        totalCount: result.totalCount,
+        totalFilteredCount: result.totalCount,
+        totalPages: result.totalPages,
         isLoading: false 
       })
-      get().loadAllTags()
     } catch (e) {
       set({ error: `加载书库失败: ${e}`, isLoading: false })
     }
@@ -293,9 +361,9 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
     }
   },
 
-  removeLibraryPath: async (index: number) => {
+  removeLibraryPath: async (path: string) => {
     try {
-      const paths = await invoke<string[]>('remove_library_path', { index })
+      const paths = await invoke<string[]>('remove_library_path', { path })
       set({ libraryPaths: paths })
       await get().scanAndLoad()
     } catch (e) {
@@ -306,80 +374,24 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
   scanAndLoad: async () => {
     set({ isScanning: true, error: null })
     try {
-      const allManga: MangaItem[] = []
-      let id = 1
       const paths = get().libraryPaths
 
-      for (const path of paths) {
-        try {
-          const result = await invoke<{ comics: Array<{ path: string; title: string; source_type: string }>; error: string | null }>('scan_directory', { directory: path })
-          
-          if (result.comics) {
-            for (const comic of result.comics) {
-              const folderPath = comic.source_type === 'folder' ? comic.path : comic.path.substring(0, Math.max(comic.path.lastIndexOf('\\'), comic.path.lastIndexOf('/')))
-              
-              const formatText = comic.source_type === 'folder' ? '文件夹' : comic.source_type === 'pdf' ? 'PDF' : comic.source_type.toUpperCase()
-              
-              const mangaItem: MangaItem = {
-                id: String(id++),
-                title: comic.title,
-                path: comic.path,
-                folderPath,
-                sourceType: comic.source_type,
-                isFavorite: false,
-                currentPage: 0,
-                totalPages: 0,
-                addedDate: new Date().toISOString(),
-                lastOpened: '',
-                formatText,
-                fileSizeText: '',
-                progressPercentage: 0,
-                coverThumbnail: null,
-              }
-              allManga.push(mangaItem)
-              await get().saveToDatabase(mangaItem)
-            }
-          }
-        } catch (e) {
-          console.error(`扫描目录 ${path} 失败:`, e)
-        }
-      }
+      const result = await scanAndBuildMangaList({
+        paths,
+        setLoading: (loading) => set({ isScanning: loading }),
+        onComplete: () => get().applyFilters(),
+      })
 
-      let allSubfolders: string[] = []
-      if (paths.length > 0) {
-        try {
-          allSubfolders = await invoke<string[]>('get_all_subfolders', { rootPath: paths[0] })
-        } catch (e) {
-          console.error('获取文件夹列表失败:', e)
-        }
-      }
-
-      const folderTree = buildFolderTree(paths, allManga, allSubfolders)
-      
-      // Load favorites status from DB
-      const favComics = await invoke<ComicMetadata[]>('get_favorite_comics')
-      const favPaths = new Set(favComics.map(c => c.path))
-      const updatedManga = allManga.map(m => ({
-        ...m,
-        isFavorite: favPaths.has(m.path),
-      }))
-      
-      const filtered = updatedManga
-      const totalCount = updatedManga.length
-      const totalPages = Math.max(1, Math.ceil(totalCount / 50))
-      const paged = filtered.slice(0, 50)
-      
       set({ 
-        mangaList: updatedManga, 
-        filteredMangaList: filtered,
-        pagedMangaList: paged,
-        folderTree,
-        totalCount,
-        totalFilteredCount: totalCount,
-        totalPages,
+        mangaList: result.mangaList, 
+        filteredMangaList: result.mangaList,
+        pagedMangaList: result.pagedMangaList,
+        folderTree: result.folderTree,
+        totalCount: result.totalCount,
+        totalFilteredCount: result.totalCount,
+        totalPages: result.totalPages,
         isScanning: false 
       })
-      get().applyFilters()
     } catch (e) {
       set({ error: `扫描失败: ${e}`, isScanning: false })
     }
@@ -398,6 +410,7 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
       await saveComicMetadata(metadata)
     } catch (e) {
       console.error(`保存漫画元数据失败:`, e)
+      set({ error: '保存漫画元数据失败' })
     }
   },
 
@@ -424,40 +437,40 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
       }
     } catch (e) {
       console.error(`保存阅读进度失败:`, e)
+      set({ error: '保存阅读进度失败' })
     }
   },
 
   toggleFavorite: async (manga: MangaItem) => {
     try {
-      const comics = await invoke<ComicMetadata[]>('get_all_comics_metadata')
-      const comic = comics.find(c => c.path === manga.path)
-      const comicId = comic?.id
+      const comicId = await getComicIdByPath(manga.path)
       
-      if (comicId) {
-        const isFav = await invoke<boolean>('is_favorite', { comicId })
-        
-        if (isFav) {
-          await invoke('remove_from_favorites', { comicId })
-        } else {
-          await invoke('add_to_favorites', { comicId })
-        }
-        
-        const newFavState = !isFav
-        
-        set(state => ({
-          mangaList: state.mangaList.map(m => 
-            m.id === manga.id ? { ...m, isFavorite: newFavState } : m
-          ),
-          filteredMangaList: state.filteredMangaList.map(m => 
-            m.id === manga.id ? { ...m, isFavorite: newFavState } : m
-          ),
-          selectedManga: state.selectedManga && state.selectedManga.id === manga.id
-            ? { ...state.selectedManga, isFavorite: newFavState }
-            : state.selectedManga
-        }))
+      if (!comicId) return
+      
+      const isFav = await invoke<boolean>('is_favorite', { comicId })
+      
+      if (isFav) {
+        await invoke('remove_from_favorites', { comicId })
+      } else {
+        await invoke('add_to_favorites', { comicId })
       }
+      
+      const newFavState = !isFav
+      
+      set(state => ({
+        mangaList: state.mangaList.map(m => 
+          m.id === manga.id ? { ...m, isFavorite: newFavState } : m
+        ),
+        filteredMangaList: state.filteredMangaList.map(m => 
+          m.id === manga.id ? { ...m, isFavorite: newFavState } : m
+        ),
+        selectedManga: state.selectedManga && state.selectedManga.id === manga.id
+          ? { ...state.selectedManga, isFavorite: newFavState }
+          : state.selectedManga
+      }))
     } catch (e) {
       console.error(`切换收藏状态失败:`, e)
+      set({ error: '切换收藏状态失败' })
     }
   },
 
@@ -475,8 +488,7 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
     if (manga) {
       await get().loadMangaTags(manga)
       try {
-        const comics = await invoke<ComicMetadata[]>('get_all_comics_metadata')
-        const comic = comics.find(c => c.path === manga.path)
+        const comic = await getComicByPath(manga.path)
         if (comic) {
           const updatedManga = {
             ...manga,
@@ -487,6 +499,7 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
         }
       } catch (e) {
         console.error('加载漫画元数据失败:', e)
+        set({ error: '加载漫画元数据失败' })
       }
     } else {
       set({ mangaTags: [] })
@@ -591,42 +604,42 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
 
   loadMangaTags: async (manga: MangaItem) => {
     try {
-      const comics = await invoke<ComicMetadata[]>('get_all_comics_metadata')
-      const comic = comics.find(c => c.path === manga.path)
-      if (comic) {
-        const tags = await invoke<Tag[]>('get_comic_tags', { comicId: comic.id })
+      const comicId = await getComicIdByPath(manga.path)
+      if (comicId) {
+        const tags = await invoke<Tag[]>('get_comic_tags', { comicId })
         set({ mangaTags: tags })
       }
     } catch (e) {
       console.error(`加载标签失败:`, e)
+      set({ error: '加载标签失败' })
     }
   },
 
   addTag: async (manga: MangaItem, tagName: string) => {
     try {
-      const comics = await invoke<ComicMetadata[]>('get_all_comics_metadata')
-      const comic = comics.find(c => c.path === manga.path)
-      if (comic) {
-        await invoke('add_tag_to_comic', { comicId: comic.id, tagName })
+      const comicId = await getComicIdByPath(manga.path)
+      if (comicId) {
+        await invoke('add_tag_to_comic', { comicId, tagName })
         await get().loadMangaTags(manga)
         await get().loadAllTags()
       }
     } catch (e) {
       console.error(`添加标签失败:`, e)
+      set({ error: '添加标签失败' })
     }
   },
 
   removeTag: async (manga: MangaItem, tagId: number) => {
     try {
-      const comics = await invoke<ComicMetadata[]>('get_all_comics_metadata')
-      const comic = comics.find(c => c.path === manga.path)
-      if (comic) {
-        await invoke('remove_tag_from_comic', { comicId: comic.id, tagId })
+      const comicId = await getComicIdByPath(manga.path)
+      if (comicId) {
+        await invoke('remove_tag_from_comic', { comicId, tagId })
         await get().loadMangaTags(manga)
         await get().loadAllTags()
       }
     } catch (e) {
       console.error(`移除标签失败:`, e)
+      set({ error: '移除标签失败' })
     }
   },
 
@@ -636,6 +649,7 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
       set({ allTags: tags })
     } catch (e) {
       console.error(`加载所有标签失败:`, e)
+      set({ error: '加载所有标签失败' })
     }
   },
 
@@ -661,6 +675,7 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
       get().applyFilters()
     } catch (e) {
       console.error(`加载收藏失败:`, e)
+      set({ error: '加载收藏失败' })
     }
   },
 }))

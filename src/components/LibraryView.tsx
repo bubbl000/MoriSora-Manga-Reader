@@ -17,13 +17,14 @@ import { HiFunnel, HiTag, HiOutlineTag } from 'react-icons/hi2'
 import { invoke } from '@tauri-apps/api/core'
 
 // Folder tree node component
-function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop }: {
+function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop, onShowMessage }: {
   node: FolderNode
   depth: number
   onSelect: (path: string) => void
   onDragStart: (path: string, e: React.MouseEvent) => void
   onDragOver: (path: string, e: React.DragEvent | React.MouseEvent) => void
   onDrop: (targetPath: string) => void
+  onShowMessage?: (message: string) => void
 }) {
   const [isExpanded, setIsExpanded] = useState(node.isExpanded)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
@@ -51,6 +52,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       await invoke('open_in_explorer', { path: node.path })
     } catch (err) {
       console.error('打开资源管理器失败:', err)
+      onShowMessage?.('打开资源管理器失败')
     }
   }
 
@@ -62,6 +64,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       setShowDeleteConfirm(true)
     } catch (err) {
       console.error('统计漫画数量失败:', err)
+      onShowMessage?.('统计漫画数量失败')
     }
   }
 
@@ -69,9 +72,11 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
     setShowDeleteConfirm(false)
     try {
       await invoke('delete_file_or_folder', { path: node.path })
+      onShowMessage?.(`文件夹 "${node.name}" 已删除`)
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('删除失败:', err)
+      onShowMessage?.('删除失败')
     }
   }
 
@@ -103,6 +108,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('重命名文件夹失败:', err)
+      onShowMessage?.('重命名文件夹失败')
     }
   }
 
@@ -133,6 +139,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('创建子文件夹失败:', err)
+      onShowMessage?.('创建子文件夹失败')
     }
   }
 
@@ -178,6 +185,7 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
               onDragStart={onDragStart}
               onDragOver={onDragOver}
               onDrop={onDrop}
+              onShowMessage={onShowMessage}
             />
           ))}
         </div>
@@ -332,11 +340,12 @@ function FolderTreeNode({ node, depth, onSelect, onDragStart, onDragOver, onDrop
 }
 
 // Manga cover card component
-function MangaCard({ manga, onClick, isSelected, onDragStart }: {
+function MangaCard({ manga, onClick, isSelected, onDragStart, onShowMessage }: {
   manga: MangaItem
   onClick: () => void
   isSelected: boolean
   onDragStart: (path: string, name: string, e: React.MouseEvent) => void
+  onShowMessage?: (message: string) => void
 }) {
   const coverSize = useMangaStore((s) => s.coverSize)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
@@ -363,6 +372,7 @@ function MangaCard({ manga, onClick, isSelected, onDragStart }: {
       await invoke('open_in_explorer', { path: folderPath })
     } catch (err) {
       console.error('打开资源管理器失败:', err)
+      onShowMessage?.('打开资源管理器失败')
     }
   }
 
@@ -403,6 +413,7 @@ function MangaCard({ manga, onClick, isSelected, onDragStart }: {
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('重命名失败:', err)
+      onShowMessage?.('重命名失败')
     }
   }
 
@@ -410,9 +421,11 @@ function MangaCard({ manga, onClick, isSelected, onDragStart }: {
     setShowDeleteConfirm(false)
     try {
       await invoke('delete_file_or_folder', { path: manga.path })
+      onShowMessage?.(`"${manga.title}" 已删除`)
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('删除失败:', err)
+      onShowMessage?.('删除失败')
     }
   }
 
@@ -608,7 +621,21 @@ function LibraryView() {
     selectTag,
     loadAllTags,
     libraryPaths,
+    error: storeError,
   } = useMangaStore()
+
+  // 同步 store 错误状态到 statusMessage
+  useEffect(() => {
+    if (storeError) {
+      setStatusMessage(storeError)
+      // 3秒后自动清除错误提示
+      const timer = setTimeout(() => {
+        setStatusMessage('')
+        useMangaStore.setState({ error: null })
+      }, 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [storeError])
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [showSortMenu, setShowSortMenu] = useState(false)
@@ -722,6 +749,7 @@ function LibraryView() {
       })
     } catch (error) {
       console.error('打开阅读器窗口失败:', error)
+      setStatusMessage('打开阅读器窗口失败')
     }
   }
 
@@ -790,13 +818,16 @@ function LibraryView() {
       }
       
       if (noConflicts.length > 0) {
+        let copyFailed = false
         for (const file of noConflicts) {
           try {
             await invoke('copy_file_to_folder', { sourcePath: file, targetFolder })
           } catch (err) {
             console.error('复制文件失败:', err)
+            copyFailed = true
           }
         }
+        if (copyFailed) setStatusMessage('部分文件复制失败')
       }
       
       if (conflicts.length > 0) {
@@ -817,12 +848,17 @@ function LibraryView() {
 
   const handleConfirmCopyWithSuffix = async () => {
     setShowConflictDialog(false)
+    let copyFailed = false
     for (const file of pendingDropFiles) {
       try {
         await invoke('copy_file_to_folder_with_suffix', { sourcePath: file, targetFolder: pendingTargetFolder })
       } catch (err) {
         console.error('复制文件失败:', err)
+        copyFailed = true
       }
+    }
+    if (copyFailed) {
+      setStatusMessage('部分文件复制失败')
     }
     scanAndLoad()
   }
@@ -959,9 +995,11 @@ function LibraryView() {
 
     try {
       await invoke('move_folder', { sourcePath: dragged, targetParentPath: targetPath })
+      setStatusMessage('文件夹移动成功')
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('移动文件夹失败:', err)
+      setStatusMessage('移动文件夹失败')
     } finally {
       setDraggedFolderPath(null)
       setDragOverFolderPath(null)
@@ -976,9 +1014,11 @@ function LibraryView() {
 
     try {
       await invoke('move_file_to_folder', { sourcePath: mangaPath, targetFolder: targetPath })
+      setStatusMessage('漫画移动成功')
       useMangaStore.getState().scanAndLoad()
     } catch (err) {
       console.error('移动漫画文件失败:', err)
+      setStatusMessage('移动漫画文件失败')
     } finally {
       setDraggedMangaPath(null)
       setDragOverFolderPath(null)
@@ -1116,6 +1156,7 @@ function LibraryView() {
                     onDragStart={handleFolderDragStart}
                     onDragOver={handleFolderDragOver}
                     onDrop={handleFolderDrop}
+                    onShowMessage={setStatusMessage}
                   />
                 ))
               ) : (
@@ -1287,6 +1328,7 @@ function LibraryView() {
                       onClick={() => selectManga(manga)}
                       isSelected={selectedManga?.id === manga.id}
                       onDragStart={handleMangaDragStart}
+                      onShowMessage={setStatusMessage}
                     />
                   ))}
                 </div>
@@ -1533,7 +1575,11 @@ function LibraryView() {
 
       {/* Status Toast */}
       {statusMessage && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-bg-card border border-border-1 rounded-lg shadow-xl px-4 py-2 text-sm text-text-primary max-w-md">
+        <div className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-50 border rounded-lg shadow-xl px-4 py-2 text-sm max-w-md ${
+          statusMessage.includes('失败')
+            ? 'bg-red-900/90 border-red-700 text-red-100'
+            : 'bg-bg-card border-border-1 text-text-primary'
+        }`}>
           {statusMessage}
           <button
             onClick={() => setStatusMessage('')}

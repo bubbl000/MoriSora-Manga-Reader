@@ -1,12 +1,12 @@
 // 参考: e:\06-xiangmu\处理中\new2\comic-shelf-main\src-tauri\src\lib.rs
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::fs;
 use std::io::Cursor;
 use std::io::Read;
 use std::path::Path;
 use lopdf::Document;
 use unrar::Archive;
+use crate::sort_utils::natural_cmp;
 
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif"];
 
@@ -15,53 +15,6 @@ pub struct ArchivePageInfo {
     pub page_number: usize,
     pub entry_path: String,
     pub file_name: String,
-}
-
-pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let re = regex::Regex::new(r"(\d+)").unwrap();
-    let mut a_parts = re.find_iter(a);
-    let mut b_parts = re.find_iter(b);
-
-    let a_lower = a.to_ascii_lowercase();
-    let b_lower = b.to_ascii_lowercase();
-
-    if a_lower == b_lower {
-        return a.cmp(b);
-    }
-
-    let mut a_pos = 0;
-    let mut b_pos = 0;
-
-    loop {
-        let a_match = a_parts.next();
-        let b_match = b_parts.next();
-
-        match (a_match, b_match) {
-            (Some(am), Some(bm)) => {
-                let a_before = &a_lower[a_pos..am.start()];
-                let b_before = &b_lower[b_pos..bm.start()];
-
-                if a_before != b_before {
-                    return a_lower.cmp(&b_lower);
-                }
-
-                let a_num = am.as_str();
-                let b_num = bm.as_str();
-
-                if a_num.len() != b_num.len() {
-                    return a_num.len().cmp(&b_num.len());
-                }
-                match a_num.cmp(b_num) {
-                    Ordering::Equal => {}
-                    other => return other,
-                }
-
-                a_pos = am.end();
-                b_pos = bm.end();
-            }
-            _ => return a_lower.cmp(&b_lower),
-        }
-    }
 }
 
 fn extension_of(path: &Path) -> Option<String> {

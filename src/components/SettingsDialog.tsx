@@ -33,8 +33,8 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
     }
   }
 
-  const handleRemovePath = async (index: number) => {
-    await removeLibraryPath(index)
+  const handleRemovePath = async (path: string) => {
+    await removeLibraryPath(path)
   }
 
   const handleSaveAndScan = async () => {
@@ -102,7 +102,7 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
                       {path}
                     </span>
                     <button
-                      onClick={() => handleRemovePath(index)}
+                      onClick={() => handleRemovePath(path)}
                       className="p-1 text-text-muted hover:text-red-400 transition-colors"
                       title="移除"
                     >

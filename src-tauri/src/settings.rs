@@ -70,14 +70,14 @@ pub fn add_library_path(path: String) -> Result<Vec<String>, String> {
     Ok(settings.library_paths)
 }
 
-pub fn remove_library_path(index: usize) -> Result<Vec<String>, String> {
+pub fn remove_library_path(path: &str) -> Result<Vec<String>, String> {
     let mut settings = load_settings()?;
-    
-    if index < settings.library_paths.len() {
-        settings.library_paths.remove(index);
-        save_settings(&settings)?;
+    let initial_len = settings.library_paths.len();
+    settings.library_paths.retain(|p| p != path);
+    if settings.library_paths.len() == initial_len {
+        return Err(format!("路径不存在: {}", path));
     }
-    
+    save_settings(&settings)?;
     Ok(settings.library_paths)
 }
 

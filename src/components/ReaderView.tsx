@@ -3,6 +3,168 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import * as pdfjsLib from 'pdfjs-dist'
 import * as databaseService from '../services/databaseService'
+import { RxCross2 } from 'react-icons/rx'
+
+/**
+ * LRU 缓存实现
+ * 支持容量限制，超出时自动淘汰最久未使用的条目
+ * 淘汰时自动调用 onEvict 回调释放 Blob URL
+ */
+class LRUCache<K, V> {
+  private cache: Map<K, V>
+  private readonly maxSize: number
+  private readonly onEvict?: (value: V) => void
+
+  constructor(maxSize: number, onEvict?: (value: V) => void) {
+    this.cache = new Map()
+    this.maxSize = maxSize
+    this.onEvict = onEvict
+  }
+
+  get(key: K): V | undefined {
+    const value = this.cache.get(key)
+    if (value !== undefined) {
+      // 访问时将键移至最新位置
+      this.cache.delete(key)
+      this.cache.set(key, value)
+    }
+    return value
+  }
+
+  set(key: K, value: V): void {
+    // 如果键已存在，先删除再插入以更新位置
+    if (this.cache.has(key)) {
+      this.cache.delete(key)
+    }
+    this.cache.set(key, value)
+    // 超出容量时淘汰最旧条目
+    while (this.cache.size > this.maxSize) {
+      const oldestKey = this.cache.keys().next().value
+      if (oldestKey !== undefined) {
+        const oldestValue = this.cache.get(oldestKey)
+        if (oldestValue) this.onEvict?.(oldestValue)
+        this.cache.delete(oldestKey)
+      }
+    }
+  }
+
+  has(key: K): boolean {
+    return this.cache.has(key)
+  }
+
+  clear(): void {
+    this.cache.forEach(value => this.onEvict?.(value))
+    this.cache.clear()
+  }
+
+  get size(): number {
+    return this.cache.size
+  }
+
+  keys(): K[] {
+    return Array.from(this.cache.keys())
+  }
+}
+
+/**
+ * 图片压缩工具
+ * 使用 Canvas 对大尺寸图片进行压缩，减少内存占用和渲染压力
+ * 配置：maxWidth 1920, maxHeight 2880, jpegQuality 0.85
+ * 图片尺寸小于阈值时跳过压缩，避免不必要的处理开销
+ */
+const COMPRESS_CONFIG = {
+  maxWidth: 1920,
+  maxHeight: 2880,
+  jpegQuality: 0.85,
+}
+
+/**
+ * 判断是否需要压缩
+ * 尺寸小于阈值时不压缩，直接返回原始 Blob
+ */
+function needsCompression(width: number, height: number): boolean {
+  return width > COMPRESS_CONFIG.maxWidth || height > COMPRESS_CONFIG.maxHeight
+}
+
+/**
+ * 计算等比缩放后的尺寸
+ * 保持宽高比，确保不超过最大宽高限制
+ */
+function calculateScaledSize(
+  originalWidth: number,
+  originalHeight: number,
+): { width: number; height: number } {
+  const { maxWidth, maxHeight } = COMPRESS_CONFIG
+  let width = originalWidth
+  let height = originalHeight
+
+  if (width > maxWidth) {
+    const ratio = maxWidth / width
+    width = maxWidth
+    height = Math.floor(height * ratio)
+  }
+
+  if (height > maxHeight) {
+    const ratio = maxHeight / height
+    height = maxHeight
+    width = Math.floor(width * ratio)
+  }
+
+  return { width, height }
+}
+
+/**
+ * 压缩图片并返回压缩后的 Blob
+ * 流程：Uint8Array -> Blob -> ImageBitmap -> Canvas 绘制 -> toBlob(JPEG)
+ * 使用 createImageBitmap 避免创建 DOM Image 元素，性能更好
+ * 尺寸小于阈值时跳过压缩，直接返回原始 Blob
+ */
+async function compressImage(uint8Array: Uint8Array): Promise<Blob> {
+  // 创建干净的 ArrayBuffer 副本，避免共享 buffer 的偏移问题
+  const arrayBuffer = uint8Array.buffer.slice(
+    uint8Array.byteOffset,
+    uint8Array.byteOffset + uint8Array.byteLength,
+  )
+
+  // 通过 Blob 创建 ImageBitmap（TypeScript 要求 ImageBitmapSource 为 Blob/ImageData 等）
+  const sourceBlob = new Blob([arrayBuffer])
+  const bitmap = await createImageBitmap(sourceBlob)
+  const { width, height } = bitmap
+
+  // 尺寸未超限，直接转 Blob 避免不必要的压缩
+  if (!needsCompression(width, height)) {
+    bitmap.close()
+    const blob = new Blob([arrayBuffer])
+    return blob
+  }
+
+  // 计算缩放后尺寸
+  const { width: scaledWidth, height: scaledHeight } = calculateScaledSize(width, height)
+
+  // 使用 Canvas 绘制缩放后的图像
+  const canvas = document.createElement('canvas')
+  canvas.width = scaledWidth
+  canvas.height = scaledHeight
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    bitmap.close()
+    throw new Error('无法创建 Canvas 上下文')
+  }
+
+  ctx.drawImage(bitmap, 0, 0, scaledWidth, scaledHeight)
+  bitmap.close()
+
+  // 导出为 JPEG 格式
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob((b) => resolve(b), 'image/jpeg', COMPRESS_CONFIG.jpegQuality)
+  })
+
+  if (!blob) {
+    throw new Error('图片压缩失败：Canvas toBlob 返回空值')
+  }
+
+  return blob
+}
 
 let pdfWorkerInitialized = false
 
@@ -32,47 +194,93 @@ function ReaderView() {
   const [folderImages, setFolderImages] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [currentImageSrc, setCurrentImageSrc] = useState('')
-  const [imageCache, setImageCache] = useState<Record<number, string>>({})
-  const [folderImageCache, setFolderImageCache] = useState<Record<string, string>>({})
   const [zoomMode, setZoomMode] = useState(false)
   const [readMode, setReadMode] = useState<ReadMode>('single')
   const [doublePageRight, setDoublePageRight] = useState('')
   const [scrollImages, setScrollImages] = useState<{ path: string; url: string }[]>([])
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  // Scroll 模式按需加载：记录已加载的页码集合，避免重复加载
+  const loadedScrollPagesRef = useRef<Set<number>>(new Set())
+  // 正在加载中的页码集合，避免并发重复请求
+  const loadingScrollPagesRef = useRef<Set<number>>(new Set())
   const [autoPage, setAutoPage] = useState(false)
   const [autoPageInterval, setAutoPageInterval] = useState(3000)
   const autoPageRef = useRef<number | null>(null)
   const [comicId, setComicId] = useState<number | null>(null)
+  const [errorToast, setErrorToast] = useState<string | null>(null)
 
   const [isDragging, setIsDragging] = useState(false)
   const dragStartRef = useRef({ x: 0, y: 0 })
   const [zoomLevelState, setZoomLevelState] = useState(100)
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
   const initialLoadRef = useRef(false)
+  const createdBlobUrlsRef = useRef<Set<string>>(new Set())
+  // 用于追踪最新的翻页请求，防止竞态条件导致图片与页码不匹配
+  const pageRequestSequenceRef = useRef(0)
+  // PDF 文档缓存，避免每次翻页都重新加载和解析整个 PDF
+  const pdfDocumentRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null)
+  const pdfFilePathRef = useRef<string>('')
+
+  const MAX_CACHE_SIZE = 50
+
+  const revokeBlobUrl = useCallback((url: string) => {
+    if (url && createdBlobUrlsRef.current.has(url)) {
+      URL.revokeObjectURL(url)
+      createdBlobUrlsRef.current.delete(url)
+    }
+  }, [])
+
+  const revokeAllBlobUrls = useCallback(() => {
+    createdBlobUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
+    createdBlobUrlsRef.current.clear()
+  }, [])
+
+  const addBlobUrl = useCallback((url: string) => {
+    createdBlobUrlsRef.current.add(url)
+  }, [])
+
+  // 在 revokeBlobUrl 定义之后初始化 LRU 缓存
+  // 使用 useMemo 确保缓存实例在组件生命周期内保持不变
+  const imageCache = useRef(new LRUCache<number, string>(MAX_CACHE_SIZE, (url: string) => {
+    if (url && createdBlobUrlsRef.current.has(url)) {
+      URL.revokeObjectURL(url)
+      createdBlobUrlsRef.current.delete(url)
+    }
+  })).current
+  const folderImageCache = useRef(new LRUCache<string, string>(MAX_CACHE_SIZE, (url: string) => {
+    if (url && createdBlobUrlsRef.current.has(url)) {
+      URL.revokeObjectURL(url)
+      createdBlobUrlsRef.current.delete(url)
+    }
+  })).current
 
   const totalPages = sourceType === 'archive' || sourceType === 'pdf' ? archivePages.length : folderImages.length
 
   const loadFolderImage = useCallback(async (filePath: string): Promise<string> => {
-    const cacheKey = filePath
-    if (folderImageCache[cacheKey]) {
-      return folderImageCache[cacheKey]
+    const cachedUrl = folderImageCache.get(filePath)
+    if (cachedUrl) {
+      return cachedUrl
     }
     try {
       const bytes = await invoke<number[]>('read_image_bytes', { filePath })
       const uint8Array = new Uint8Array(bytes)
-      const blob = new Blob([uint8Array])
+      // 使用压缩工具处理图片，大尺寸图片会自动压缩到 maxWidth/maxHeight 以内
+      const blob = await compressImage(uint8Array)
       const url = URL.createObjectURL(blob)
-      setFolderImageCache(prev => ({ ...prev, [cacheKey]: url }))
+      addBlobUrl(url)
+      folderImageCache.set(filePath, url)
       return url
     } catch (error) {
       console.error('读取图片文件失败:', error)
+      setErrorToast('读取图片文件失败')
       return ''
     }
-  }, [folderImageCache])
+  }, [addBlobUrl, folderImageCache])
 
   const loadArchivePage = useCallback(async (pageInfo: ArchivePageInfo) => {
-    if (imageCache[pageInfo.page_number]) {
-      return imageCache[pageInfo.page_number]
+    const cachedUrl = imageCache.get(pageInfo.page_number)
+    if (cachedUrl) {
+      return cachedUrl
     }
     try {
       const bytes = await invoke<number[]>('get_archive_image_bytes', {
@@ -80,26 +288,45 @@ function ReaderView() {
         entryPath: pageInfo.entry_path,
       })
       const uint8Array = new Uint8Array(bytes)
-      const blob = new Blob([uint8Array])
+      // 使用压缩工具处理图片，大尺寸图片会自动压缩到 maxWidth/maxHeight 以内
+      const blob = await compressImage(uint8Array)
       const url = URL.createObjectURL(blob)
-      setImageCache(prev => ({ ...prev, [pageInfo.page_number]: url }))
+      addBlobUrl(url)
+      imageCache.set(pageInfo.page_number, url)
       return url
     } catch (error) {
       console.error('加载压缩包页面失败:', error)
+      setErrorToast('加载压缩包页面失败')
       return ''
     }
-  }, [mangaPath, imageCache])
+  }, [mangaPath, addBlobUrl, imageCache])
 
   const loadPdfPage = useCallback(async (pageNumber: number): Promise<string> => {
     try {
-      if (imageCache[pageNumber]) {
-        return imageCache[pageNumber]
+      const cachedUrl = imageCache.get(pageNumber)
+      if (cachedUrl) {
+        return cachedUrl
       }
       const pdfjsLibInstance = await initPdfWorker()
-      const bytes = await invoke<number[]>('read_image_bytes', { filePath: mangaPath })
-      const uint8Array = new Uint8Array(bytes)
-      const loadingTask = pdfjsLibInstance.getDocument({ data: uint8Array })
-      const pdf = await loadingTask.promise
+
+      // 如果文件路径变化或文档未加载，则重新加载 PDF
+      if (!pdfDocumentRef.current || pdfFilePathRef.current !== mangaPath) {
+        // 清理旧文档
+        if (pdfDocumentRef.current) {
+          try {
+            await pdfDocumentRef.current.destroy()
+          } catch {}
+          pdfDocumentRef.current = null
+        }
+
+        const bytes = await invoke<number[]>('read_image_bytes', { filePath: mangaPath })
+        const uint8Array = new Uint8Array(bytes)
+        const loadingTask = pdfjsLibInstance.getDocument({ data: uint8Array })
+        pdfDocumentRef.current = await loadingTask.promise
+        pdfFilePathRef.current = mangaPath
+      }
+
+      const pdf = pdfDocumentRef.current
       const page = await pdf.getPage(pageNumber)
       const viewport = page.getViewport({ scale: 1.5 })
       const canvas = document.createElement('canvas')
@@ -122,14 +349,17 @@ function ReaderView() {
         reader.onerror = () => reject(new Error('读取PDF Blob失败'))
         reader.readAsDataURL(blob)
       })
-      setImageCache(prev => ({ ...prev, [pageNumber]: url }))
-      try { page.cleanup(); pdf.cleanup(); await pdf.destroy(); await loadingTask.destroy() } catch {}
+      addBlobUrl(url)
+      imageCache.set(pageNumber, url)
+      // 清理单页渲染资源，但不销毁文档
+      try { page.cleanup() } catch {}
       return url
     } catch (error) {
       console.error('加载PDF页面失败:', error)
+      setErrorToast('加载PDF页面失败')
       return ''
     }
-  }, [mangaPath, imageCache])
+  }, [mangaPath, addBlobUrl, imageCache])
 
   const getPageUrl = useCallback(async (pageIndex: number): Promise<string> => {
     if (sourceType === 'pdf') return await loadPdfPage(pageIndex)
@@ -152,8 +382,9 @@ function ReaderView() {
             entryPath: pages[0].entry_path,
           })
           const uint8Array = new Uint8Array(bytes)
-          const blob = new Blob([uint8Array])
+          const blob = await compressImage(uint8Array)
           const url = URL.createObjectURL(blob)
+          addBlobUrl(url)
           if (url) setCurrentImageSrc(url)
         }
       } else if (type === 'pdf') {
@@ -175,10 +406,11 @@ function ReaderView() {
       }
     } catch (error) {
       console.error('加载图片失败:', error)
+      setErrorToast('加载图片失败')
     } finally {
       setIsLoading(false)
     }
-  }, [loadPdfPage, loadFolderImage])
+  }, [loadPdfPage, loadFolderImage, addBlobUrl])
 
   const restoreReadingProgress = useCallback(async (path: string) => {
     try {
@@ -194,19 +426,6 @@ function ReaderView() {
     }
     return 1
   }, [])
-
-  const handleRestoreProgress = useCallback(async () => {
-    const savedPage = await restoreReadingProgress(mangaPath)
-    if (savedPage > 1) {
-      setCurrentPage(savedPage)
-      if (readMode === 'double') {
-        await loadDoublePage(savedPage)
-      } else {
-        const url = await getPageUrl(savedPage)
-        if (url) setCurrentImageSrc(url)
-      }
-    }
-  }, [mangaPath, readMode, restoreReadingProgress, loadDoublePage, getPageUrl])
 
   useEffect(() => {
     const hash = window.location.hash
@@ -248,23 +467,121 @@ function ReaderView() {
     return () => clearTimeout(timer)
   }, [currentPage, comicId, totalPages])
 
-  const loadScrollImages = useCallback(async () => {
-    const images: { path: string; url: string }[] = []
-    const sourceList = sourceType === 'archive' || sourceType === 'pdf'
-      ? archivePages.map((_, i) => i + 1)
-      : folderImages
-    for (let i = 0; i < sourceList.length; i++) {
-      const url = await getPageUrl(i + 1)
-      if (url) images.push({ path: String(i + 1), url })
+  /**
+   * Scroll 模式按需加载：加载指定范围的页码
+   * 不一次性加载全部图片，而是根据可视区域动态加载
+   */
+  const loadScrollPageRange = useCallback(async (startPage: number, endPage: number) => {
+    const newImages: { path: string; url: string }[] = []
+    for (let page = startPage; page <= endPage; page++) {
+      // 跳过已加载或正在加载的页
+      if (loadedScrollPagesRef.current.has(page) || loadingScrollPagesRef.current.has(page)) continue
+      
+      loadingScrollPagesRef.current.add(page)
+      try {
+        const url = await getPageUrl(page)
+        if (url) {
+          newImages.push({ path: String(page), url })
+          loadedScrollPagesRef.current.add(page)
+        }
+      } finally {
+        loadingScrollPagesRef.current.delete(page)
+      }
     }
-    setScrollImages(images)
-  }, [sourceType, archivePages, folderImages, getPageUrl])
+    if (newImages.length > 0) {
+      setScrollImages(prev => {
+        // 合并新图片到已有列表，按页码排序
+        const merged = [...prev, ...newImages].sort((a, b) => Number(a.path) - Number(b.path))
+        return merged
+      })
+    }
+  }, [getPageUrl])
+
+  /**
+   * Scroll 模式初始加载：只加载前 5 张 + 当前页附近
+   */
+  const initScrollImages = useCallback(async () => {
+    loadedScrollPagesRef.current.clear()
+    loadingScrollPagesRef.current.clear()
+    setScrollImages([])
+    
+    const total = totalPages
+    if (total === 0) return
+    
+    // 从第 1 页开始加载前 5 张
+    const preloadCount = Math.min(5, total)
+    await loadScrollPageRange(1, preloadCount)
+  }, [totalPages, loadScrollPageRange])
+
+  /**
+   * Scroll 模式可视区域变化时触发预加载
+   * 根据当前滚动位置加载上下各 3 张图片
+   */
+  const handleScrollPreload = useCallback(() => {
+    const container = scrollContainerRef.current
+    if (!container || scrollImages.length === 0) return
+
+    const scrollTop = container.scrollTop
+    const containerHeight = container.clientHeight
+    const images = container.querySelectorAll('img[data-page-index]')
+    
+    // 找到当前可视区域内的第一张和最后一张图片
+    let firstVisibleIndex = -1
+    let lastVisibleIndex = -1
+    
+    images.forEach((img, idx) => {
+      const rect = img.getBoundingClientRect()
+      const containerRect = container.getBoundingClientRect()
+      const imgTop = rect.top - containerRect.top
+      const imgBottom = rect.bottom - containerRect.top
+      
+      if (imgBottom > 0 && imgTop < containerHeight) {
+        if (firstVisibleIndex === -1) firstVisibleIndex = idx
+        lastVisibleIndex = idx
+      }
+    })
+
+    if (firstVisibleIndex === -1) return
+
+    // 计算需要预加载的范围：当前可视区域上下各扩展 3 张
+    const preloadBefore = 3
+    const preloadAfter = 3
+    const startPageIndex = Math.max(1, firstVisibleIndex - preloadBefore + 1)
+    const endPageIndex = Math.min(totalPages, lastVisibleIndex + preloadAfter + 1)
+    
+    loadScrollPageRange(startPageIndex, endPageIndex)
+  }, [scrollImages.length, totalPages, loadScrollPageRange])
+
+  useEffect(() => {
+    return () => {
+      revokeAllBlobUrls()
+      // 组件卸载时清理 PDF 文档
+      if (pdfDocumentRef.current) {
+        try { pdfDocumentRef.current.destroy() } catch {}
+        pdfDocumentRef.current = null
+      }
+    }
+  }, [revokeAllBlobUrls])
 
   useEffect(() => {
     if (readMode === 'scroll' && (archivePages.length > 0 || folderImages.length > 0)) {
-      loadScrollImages()
+      // Scroll 模式：按需加载，不一次性加载全部
+      initScrollImages()
+    } else if (readMode !== 'scroll' && scrollImages.length > 0) {
+      // 退出 scroll 模式时清理已加载的图片 URL
+      scrollImages.forEach(img => revokeBlobUrl(img.url))
+      loadedScrollPagesRef.current.clear()
+      loadingScrollPagesRef.current.clear()
+      setScrollImages([])
     }
-  }, [readMode, archivePages.length, folderImages.length, loadScrollImages])
+    
+    // 模式切换时清空 LRU 缓存，避免不同模式间的缓存污染
+    if (readMode === 'scroll') {
+      // Scroll 模式使用独立缓存策略，清空单页/双页模式的缓存
+      imageCache.clear()
+      folderImageCache.clear()
+    }
+  }, [readMode, archivePages.length, folderImages.length, initScrollImages, scrollImages, revokeBlobUrl, imageCache, folderImageCache])
 
   useEffect(() => {
     if (readMode === 'scroll' && scrollImages.length > 0 && currentPage > 1) {
@@ -281,10 +598,33 @@ function ReaderView() {
     }
   }, [readMode, scrollImages.length, currentPage])
 
+  // Scroll 模式下监听滚动事件，触发按需预加载
+  useEffect(() => {
+    if (readMode !== 'scroll') return
+    
+    const container = scrollContainerRef.current
+    if (!container) return
+    
+    let scrollTimer: number | null = null
+    const handleScroll = () => {
+      // 使用防抖避免滚动时频繁触发
+      if (scrollTimer) return
+      scrollTimer = window.setTimeout(() => {
+        scrollTimer = null
+        handleScrollPreload()
+      }, 200)
+    }
+    
+    container.addEventListener('scroll', handleScroll, { passive: true })
+    return () => {
+      container.removeEventListener('scroll', handleScroll)
+      if (scrollTimer) clearTimeout(scrollTimer)
+    }
+  }, [readMode, handleScrollPreload])
+
   const handleClose = async () => {
     try {
-      Object.values(imageCache).forEach(url => URL.revokeObjectURL(url))
-      Object.values(folderImageCache).forEach(url => URL.revokeObjectURL(url))
+      revokeAllBlobUrls()
       const currentWindow = getCurrentWindow()
       await currentWindow.close()
     } catch (error) {
@@ -293,55 +633,82 @@ function ReaderView() {
   }
 
   const switchToPage = useCallback(async (page: number) => {
+    const sequence = ++pageRequestSequenceRef.current
     const url = await getPageUrl(page)
-    if (url) setCurrentImageSrc(url)
+    if (sequence === pageRequestSequenceRef.current && url) {
+      setCurrentImageSrc(url)
+    }
   }, [getPageUrl])
 
   const loadDoublePage = useCallback(async (page: number) => {
+    const sequence = ++pageRequestSequenceRef.current
     const leftUrl = await getPageUrl(page)
+    if (sequence !== pageRequestSequenceRef.current) return
     setCurrentImageSrc(leftUrl)
     if (page + 1 <= totalPages) {
       const rightUrl = await getPageUrl(page + 1)
-      setDoublePageRight(rightUrl)
+      if (sequence === pageRequestSequenceRef.current) {
+        setDoublePageRight(rightUrl)
+      }
     } else {
       setDoublePageRight('')
     }
   }, [getPageUrl, totalPages])
 
-  const handleDoublePrev = useCallback(async () => {
+  const handleRestoreProgress = useCallback(async () => {
+    const savedPage = await restoreReadingProgress(mangaPath)
+    if (savedPage > 1) {
+      setCurrentPage(savedPage)
+    }
+  }, [mangaPath, restoreReadingProgress])
+
+  const handleDoublePrev = useCallback(() => {
     if (autoPage) setAutoPage(false)
     const step = readMode === 'double' ? 2 : 1
     const newPage = Math.max(1, currentPage - step)
     setCurrentPage(newPage)
-    if (readMode === 'double') await loadDoublePage(newPage)
-    else await switchToPage(newPage)
-  }, [currentPage, readMode, loadDoublePage, switchToPage, autoPage])
+  }, [currentPage, readMode, autoPage])
 
-  const handleDoubleNext = useCallback(async () => {
+  const handleDoubleNext = useCallback(() => {
     if (autoPage) setAutoPage(false)
     const step = readMode === 'double' ? 2 : 1
     const newPage = Math.min(totalPages, currentPage + step)
     setCurrentPage(newPage)
-    if (readMode === 'double') await loadDoublePage(newPage)
-    else await switchToPage(newPage)
-  }, [currentPage, totalPages, readMode, loadDoublePage, switchToPage, autoPage])
+  }, [currentPage, totalPages, readMode, autoPage])
 
   useEffect(() => {
     if (readMode === 'scroll') return
     if (autoPage && currentPage >= totalPages) setAutoPage(false)
   }, [currentPage, autoPage, totalPages, readMode])
 
+  // 统一页面加载入口：currentPage 或 readMode 变化时自动加载对应页面
+  // 使用请求序号防止快速翻页时的竞态条件
   useEffect(() => {
     if (readMode === 'scroll') return
     if (!(archivePages.length > 0 || folderImages.length > 0)) return
-    if (readMode === 'double') loadDoublePage(currentPage)
-  }, [readMode, currentPage, archivePages.length, folderImages.length, loadDoublePage])
-
-  useEffect(() => {
-    if (readMode === 'single' && (archivePages.length > 0 || folderImages.length > 0)) {
-      switchToPage(currentPage)
+    const sequence = ++pageRequestSequenceRef.current
+    const loadCurrentPage = async () => {
+      if (readMode === 'double') {
+        const leftUrl = await getPageUrl(currentPage)
+        if (sequence !== pageRequestSequenceRef.current) return
+        setCurrentImageSrc(leftUrl)
+        if (currentPage + 1 <= totalPages) {
+          const rightUrl = await getPageUrl(currentPage + 1)
+          if (sequence === pageRequestSequenceRef.current) {
+            setDoublePageRight(rightUrl)
+          }
+        } else {
+          setDoublePageRight('')
+        }
+      } else {
+        const url = await getPageUrl(currentPage)
+        if (sequence === pageRequestSequenceRef.current && url) {
+          setCurrentImageSrc(url)
+        }
+      }
     }
-  }, [currentPage, readMode, archivePages.length, folderImages.length, switchToPage])
+    loadCurrentPage()
+  }, [currentPage, readMode, archivePages.length, folderImages.length, getPageUrl, totalPages])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -377,7 +744,7 @@ function ReaderView() {
       if (zoomMode) {
         setZoomLevelState(prev => {
           const delta = e.deltaY > 0 ? -10 : 10
-          return Math.min(500, Math.max(10, prev + delta))
+          return Math.min(320, Math.max(120, prev + delta))
         })
       } else {
         if (e.deltaY > 0) handleDoubleNext()
@@ -392,10 +759,10 @@ function ReaderView() {
     const modes: ReadMode[] = ['single', 'double', 'scroll']
     const currentIndex = modes.indexOf(readMode)
     const nextMode = modes[(currentIndex + 1) % modes.length]
+    pageRequestSequenceRef.current++
     setReadMode(nextMode)
     setZoomMode(false)
-    if (nextMode === 'double') loadDoublePage(currentPage)
-    else if (nextMode === 'single') switchToPage(currentPage)
+    setDoublePageRight('')
   }
 
   const scrollToTop = () => {
@@ -483,32 +850,81 @@ function ReaderView() {
     </div>
   )
 
-  const renderScrollMode = () => (
-    <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-2 relative">
-      {scrollImages.length === 0 && isLoading ? (
-        <div className="flex items-center justify-center h-full">
-          <p className="text-text-secondary">加载中...</p>
-        </div>
-      ) : scrollImages.length === 0 ? (
-        <div className="flex items-center justify-center h-full">
-          <div className="text-center">
-            <span className="text-6xl mb-4 block">📄</span>
-            <p className="text-text-primary text-lg">暂无图片</p>
+  const renderScrollMode = () => {
+    // 构建完整的页面列表：已加载的图片 + 未加载的占位符
+    const renderScrollContent = () => {
+      if (totalPages === 0) {
+        return (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center">
+              <span className="text-6xl mb-4 block">📄</span>
+              <p className="text-text-primary text-lg">暂无图片</p>
+            </div>
           </div>
-        </div>
-      ) : (
-        <>
-          {scrollImages.map((img, index) => (
-            <img key={index} src={img.url} alt={`第 ${index + 1} 页`} className="max-w-full mx-auto block" data-page-index={index} />
-          ))}
-          <button onClick={scrollToTop}
-            className="fixed bottom-8 right-8 w-10 h-10 bg-accent text-accent-text rounded-full shadow-lg flex items-center justify-center hover:bg-accent-hover transition-colors text-lg font-bold">
-            ↑
-          </button>
-        </>
-      )}
-    </div>
-  )
+        )
+      }
+
+      // 构建已加载页面的 URL 映射表
+      const loadedUrlMap = new Map<string, string>()
+      scrollImages.forEach(img => loadedUrlMap.set(img.path, img.url))
+
+      const elements: React.ReactNode[] = []
+      
+      for (let page = 1; page <= totalPages; page++) {
+        const pageKey = String(page)
+        const imageUrl = loadedUrlMap.get(pageKey)
+        
+        if (imageUrl) {
+          // 已加载的图片
+          elements.push(
+            <img 
+              key={page} 
+              src={imageUrl} 
+              alt={`第 ${page} 页`} 
+              className="max-w-full mx-auto block" 
+              data-page-index={page - 1}
+            />
+          )
+        } else {
+          // 未加载的占位符，保持布局稳定
+          elements.push(
+            <div 
+              key={page} 
+              className="w-full min-h-[200px] flex items-center justify-center border border-border-1 rounded"
+              data-page-index={page - 1}
+            >
+              <div className="text-center">
+                <p className="text-text-muted text-sm">第 {page} 页 / 共 {totalPages} 页</p>
+                <p className="text-text-muted text-xs mt-1">滚动至可视区域自动加载</p>
+              </div>
+            </div>
+          )
+        }
+      }
+
+      return elements
+    }
+
+    return (
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-2 relative">
+        {isLoading && scrollImages.length === 0 ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-text-secondary">加载中...</p>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-2">
+              {renderScrollContent()}
+            </div>
+            <button onClick={scrollToTop}
+              className="fixed bottom-8 right-8 w-10 h-10 bg-accent text-accent-text rounded-full shadow-lg flex items-center justify-center hover:bg-accent-hover transition-colors text-lg font-bold">
+              ↑
+            </button>
+          </>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="h-full w-full bg-bg-main flex flex-col overflow-hidden">
@@ -552,10 +968,23 @@ function ReaderView() {
             </button>
           )}
           {readMode !== 'scroll' && zoomMode && (
-            <button onClick={() => { setZoomLevelState(100); resetPan() }}
-              className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm">
-              适应窗口
-            </button>
+            <>
+              <button onClick={() => { setZoomLevelState(100); resetPan() }}
+                className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm">
+                适应窗口
+              </button>
+              <input
+                type="range"
+                className="zoom-slider"
+                min={120}
+                max={320}
+                value={zoomLevelState}
+                onChange={(e) => setZoomLevelState(Number(e.target.value))}
+                style={{ '--slider-fill': `${((zoomLevelState - 120) / (320 - 120)) * 100}%` } as React.CSSProperties}
+                aria-label="缩放级别"
+              />
+              <span className="text-text-secondary text-sm min-w-[45px]">{zoomLevelState}%</span>
+            </>
           )}
           {readMode !== 'scroll' && (
             <button onClick={handleDoublePrev} disabled={currentPage === 1}
@@ -570,6 +999,19 @@ function ReaderView() {
       {readMode === 'single' && renderSinglePage()}
       {readMode === 'double' && renderDoublePage()}
       {readMode === 'scroll' && renderScrollMode()}
+
+      {/* Error Toast */}
+      {errorToast && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-red-900/90 border border-red-700 rounded-lg shadow-xl px-4 py-2 text-sm text-red-100 max-w-md">
+          {errorToast}
+          <button
+            onClick={() => setErrorToast(null)}
+            className="ml-2 text-red-300 hover:text-red-100"
+          >
+            <RxCross2 className="w-4 h-4 inline" />
+          </button>
+        </div>
+      )}
     </div>
   )
 }

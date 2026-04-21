@@ -1,11 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use crate::sort_utils::natural_cmp;
 
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif"];
 const COMIC_EXTENSIONS: &[&str] = &["cbz", "zip", "cbr", "rar"];
 const PDF_EXTENSION: &str = "pdf";
+
+/// Maximum recursion depth to prevent stack overflow from symlink cycles
+const MAX_SCAN_DEPTH: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComicCandidate {
@@ -31,8 +35,9 @@ pub fn scan_comic_directory(directory: &str) -> ScanResult {
     }
 
     let mut comics = Vec::new();
+    let mut visited = HashSet::new();
     
-    if let Err(e) = scan_directory_recursive(&path, &mut comics) {
+    if let Err(e) = scan_directory_recursive(&path, &mut comics, &mut visited, 0) {
         return ScanResult {
             comics,
             error: Some(format!("扫描出错: {}", e)),
@@ -45,7 +50,29 @@ pub fn scan_comic_directory(directory: &str) -> ScanResult {
     }
 }
 
-fn scan_directory_recursive(dir: &Path, comics: &mut Vec<ComicCandidate>) -> Result<(), String> {
+fn scan_directory_recursive(
+    dir: &Path,
+    comics: &mut Vec<ComicCandidate>,
+    visited: &mut HashSet<String>,
+    current_depth: usize,
+) -> Result<(), String> {
+    // Prevent stack overflow by limiting recursion depth
+    if current_depth >= MAX_SCAN_DEPTH {
+        return Ok(());
+    }
+
+    // Resolve to canonical path to detect symlink cycles
+    let canonical = match fs::canonicalize(dir) {
+        Ok(c) => c.to_string_lossy().to_string(),
+        Err(e) => return Err(format!("无法解析路径 {}: {}", dir.display(), e)),
+    };
+
+    // Skip if already visited (symlink cycle detection)
+    if visited.contains(&canonical) {
+        return Ok(());
+    }
+    visited.insert(canonical);
+
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => return Err(format!("无法读取目录: {}", e)),
@@ -59,8 +86,15 @@ fn scan_directory_recursive(dir: &Path, comics: &mut Vec<ComicCandidate>) -> Res
 
         let path = entry.path();
         
+        // Skip symlinks to avoid following external links or cycles
+        if let Ok(metadata) = fs::symlink_metadata(&path) {
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+        }
+        
         if path.is_dir() {
-            scan_directory_recursive(&path, comics)?;
+            scan_directory_recursive(&path, comics, visited, current_depth + 1)?;
         } else if path.is_file() {
             if let Some(ext) = path.extension() {
                 let ext_lower = ext.to_string_lossy().to_lowercase();
@@ -131,53 +165,6 @@ fn folder_has_comic_archives(folder: &Path) -> bool {
         }
     }
     false
-}
-
-fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let re = regex::Regex::new(r"(\d+)").unwrap();
-    let mut a_parts = re.find_iter(a);
-    let mut b_parts = re.find_iter(b);
-
-    let a_lower = a.to_ascii_lowercase();
-    let b_lower = b.to_ascii_lowercase();
-
-    if a_lower == b_lower {
-        return a.cmp(b);
-    }
-
-    let mut a_pos = 0;
-    let mut b_pos = 0;
-
-    loop {
-        let a_match = a_parts.next();
-        let b_match = b_parts.next();
-
-        match (a_match, b_match) {
-            (Some(am), Some(bm)) => {
-                let a_before = &a_lower[a_pos..am.start()];
-                let b_before = &b_lower[b_pos..bm.start()];
-
-                if a_before != b_before {
-                    return a_lower.cmp(&b_lower);
-                }
-
-                let a_num = am.as_str();
-                let b_num = bm.as_str();
-
-                if a_num.len() != b_num.len() {
-                    return a_num.len().cmp(&b_num.len());
-                }
-                match a_num.cmp(b_num) {
-                    Ordering::Equal => {}
-                    other => return other,
-                }
-
-                a_pos = am.end();
-                b_pos = bm.end();
-            }
-            _ => return a_lower.cmp(&b_lower),
-        }
-    }
 }
 
 pub fn get_folder_images(folder: &str) -> Vec<String> {
