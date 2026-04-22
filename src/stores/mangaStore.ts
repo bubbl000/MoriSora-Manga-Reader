@@ -253,7 +253,6 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
           }
         }
       }
-    }
 
     if (allComics.length > 0) {
       await batchSaveComicMetadata(allComics)
