@@ -2,7 +2,7 @@ use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::fs;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 // ================== Tauri State 管理 ==================
 
@@ -54,8 +54,7 @@ impl AppState {
     where
         F: FnOnce(&Connection) -> Result<T, rusqlite::Error>,
     {
-        let conn = self.db_conn.lock()
-            .map_err(|e| format!("数据库锁获取失败: {}", e))?;
+        let conn = self.db_conn.lock();
         f(&conn).map_err(|e| format!("数据库操作失败: {}", e))
     }
     
@@ -64,8 +63,7 @@ impl AppState {
     where
         F: FnOnce(&rusqlite::Transaction) -> Result<T, rusqlite::Error>,
     {
-        let mut conn = self.db_conn.lock()
-            .map_err(|e| format!("数据库锁获取失败: {}", e))?;
+        let mut conn = self.db_conn.lock();
         let tx = conn.transaction()
             .map_err(|e| format!("开启事务失败: {}", e))?;
         
@@ -355,7 +353,7 @@ pub fn get_comic_id_by_path(state: &AppState, path: &str) -> Result<Option<i64>,
 
 /// 使用 SQL LIKE 直接统计文件夹中的漫画数量（优化版本）
 pub fn count_comics_in_folder(state: &AppState, folder_path: &str) -> Result<usize, String> {
-    let conn_guard = state.db_conn.lock().map_err(|e| format!("数据库锁失败: {}", e))?;
+    let conn_guard = state.db_conn.lock();
     
     // 标准化路径分隔符
     let normalized_path = folder_path.replace('/', "\\");

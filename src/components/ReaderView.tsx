@@ -212,6 +212,8 @@ function ReaderView() {
   const loadedScrollPagesRef = useRef<Set<number>>(new Set())
   // 正在加载中的页码集合，避免并发重复请求
   const loadingScrollPagesRef = useRef<Set<number>>(new Set())
+  // 预加载定时器，用于取消未完成的预加载
+  const preloadTimerRef = useRef<number | null>(null)
   const [autoPage, setAutoPage] = useState(false)
   const [autoPageInterval, setAutoPageInterval] = useState(3000)
   const autoPageRef = useRef<number | null>(null)
@@ -248,20 +250,27 @@ function ReaderView() {
     createdBlobUrlsRef.current.add(url)
   }, [])
 
-  // 在 revokeBlobUrl 定义之后初始化 LRU 缓存
-  // 使用 useMemo 确保缓存实例在组件生命周期内保持不变
-  const imageCache = useRef(new LRUCache<number, string>(MAX_CACHE_SIZE, (url: string) => {
-    if (url && createdBlobUrlsRef.current.has(url)) {
-      URL.revokeObjectURL(url)
-      createdBlobUrlsRef.current.delete(url)
-    }
-  })).current
-  const folderImageCache = useRef(new LRUCache<string, string>(MAX_CACHE_SIZE, (url: string) => {
-    if (url && createdBlobUrlsRef.current.has(url)) {
-      URL.revokeObjectURL(url)
-      createdBlobUrlsRef.current.delete(url)
-    }
-  })).current
+  const imageCacheRef = useRef<LRUCache<number, string> | null>(null)
+  if (!imageCacheRef.current) {
+    imageCacheRef.current = new LRUCache(MAX_CACHE_SIZE, (url: string) => {
+      if (url && createdBlobUrlsRef.current.has(url)) {
+        URL.revokeObjectURL(url)
+        createdBlobUrlsRef.current.delete(url)
+      }
+    })
+  }
+  const imageCache = imageCacheRef.current
+
+  const folderImageCacheRef = useRef<LRUCache<string, string> | null>(null)
+  if (!folderImageCacheRef.current) {
+    folderImageCacheRef.current = new LRUCache(MAX_CACHE_SIZE, (url: string) => {
+      if (url && createdBlobUrlsRef.current.has(url)) {
+        URL.revokeObjectURL(url)
+        createdBlobUrlsRef.current.delete(url)
+      }
+    })
+  }
+  const folderImageCache = folderImageCacheRef.current
 
   const totalPages = sourceType === 'archive' || sourceType === 'pdf' ? archivePages.length : folderImages.length
 
@@ -309,6 +318,51 @@ function ReaderView() {
       return ''
     }
   }, [mangaPath, addBlobUrl, imageCache])
+
+  /**
+   * 预加载相邻页面图片，提升快速翻页体验
+   * 空闲时预加载前后各 2 页，使用 requestIdleCallback 避免阻塞渲染
+   */
+  const preloadAdjacentPages = useCallback((currentPageNum: number) => {
+    if (readMode === 'scroll') return
+    const PRELOAD_RANGE = 2
+    const tasks: Promise<void>[] = []
+    
+    for (let i = 1; i <= PRELOAD_RANGE; i++) {
+      const prevPage = currentPageNum - i
+      if (prevPage >= 1 && !imageCache.has(prevPage)) {
+        const pageInfo = archivePages[prevPage - 1]
+        if (pageInfo) {
+          tasks.push(loadArchivePage(pageInfo).then(() => {}))
+        }
+      }
+      const nextPage = currentPageNum + i
+      if (nextPage <= totalPages && !imageCache.has(nextPage)) {
+        const pageInfo = archivePages[nextPage - 1]
+        if (pageInfo) {
+          tasks.push(loadArchivePage(pageInfo).then(() => {}))
+        }
+      }
+    }
+    
+    // 使用 requestIdleCallback 在空闲时执行预加载
+    if ('requestIdleCallback' in window) {
+      const handle = requestIdleCallback(() => {
+        Promise.allSettled(tasks)
+      }, { timeout: 1000 })
+      // 如果当前页再次变化，取消预加载
+      if (preloadTimerRef.current) {
+        cancelIdleCallback(handle)
+      }
+      preloadTimerRef.current = handle as unknown as number
+    } else {
+      // 降级方案：延迟 100ms 后执行
+      const timer = window.setTimeout(() => {
+        Promise.allSettled(tasks)
+      }, 100)
+      preloadTimerRef.current = timer
+    }
+  }, [archivePages, totalPages, imageCache, loadArchivePage, readMode])
 
   const loadPdfPage = useCallback(async (pageNumber: number): Promise<string> => {
     try {
@@ -682,6 +736,14 @@ function ReaderView() {
     }
     loadCurrentPage()
   }, [currentPage, readMode, archivePages.length, folderImages.length, getPageUrl, totalPages])
+
+  // 页面加载完成后触发预加载
+  useEffect(() => {
+    if (readMode === 'scroll') return
+    if (sourceType === 'archive' && archivePages.length > 0 && currentPage > 0) {
+      preloadAdjacentPages(currentPage)
+    }
+  }, [currentPage, readMode, sourceType, archivePages.length, preloadAdjacentPages])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

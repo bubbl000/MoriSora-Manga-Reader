@@ -194,14 +194,24 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
     const allComics: ComicMetadata[] = []
     let id = 1
 
-    for (const path of paths) {
-      try {
+    // 使用 Promise.all 并行扫描多个库路径
+    const scanResults = await Promise.allSettled(
+      paths.map(async (path) => {
         const result = await invoke<{
           comics: Array<{ path: string; title: string; source_type: string }>
           error: string | null
         }>('scan_directory', { directory: path })
+        return { path, result }
+      })
+    )
 
-        if (result.comics) {
+    for (const scanResult of scanResults) {
+      if (scanResult.status === 'rejected') {
+        console.error('扫描目录失败:', scanResult.reason)
+        continue
+      }
+      const { path, result } = scanResult.value
+      if (result.comics) {
           for (const comic of result.comics) {
             const folderPath =
               comic.source_type === 'folder'
@@ -242,9 +252,6 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
             })
           }
         }
-      } catch (e) {
-        console.error(`扫描目录 ${path} 失败:`, e)
-        set({ error: `扫描目录 "${path}" 失败: ${e}` })
       }
     }
 

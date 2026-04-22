@@ -3,6 +3,7 @@ use std::collections::{HashSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use crate::sort_utils::natural_cmp;
+use rayon::prelude::*;
 
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif"];
 const COMIC_EXTENSIONS: &[&str] = &["cbz", "zip", "cbr", "rar"];
@@ -35,20 +36,104 @@ pub fn scan_comic_directory(directory: &str) -> ScanResult {
     }
 
     let mut comics = Vec::new();
-    let mut visited = HashSet::new();
-    let mut folder_cache = HashMap::new();
-    let mut added_image_folders = HashSet::new();
+    let _visited: HashSet<String> = HashSet::new();
+    let _folder_cache: HashMap<PathBuf, bool> = HashMap::new();
+    let _added_image_folders: HashSet<PathBuf> = HashSet::new();
     
-    if let Err(e) = scan_directory_recursive(&path, &mut comics, &mut visited, &mut folder_cache, &mut added_image_folders, 0) {
-        return ScanResult {
-            comics,
-            error: Some(format!("扫描出错: {}", e)),
-        };
+    // 第一层目录使用 rayon 并行扫描
+    if let Ok(entries) = fs::read_dir(&path) {
+        let entry_paths: Vec<_> = entries
+            .filter_map(|e| e.ok().map(|entry| entry.path()))
+            .collect();
+        
+        let results: Vec<_> = entry_paths
+            .par_iter()
+            .filter_map(|entry_path| {
+                let mut sub_comics = Vec::new();
+                let mut sub_visited = HashSet::new();
+                let mut sub_folder_cache = HashMap::new();
+                let mut sub_added = HashSet::new();
+                
+                if entry_path.is_dir() {
+                    let _ = scan_directory_recursive(
+                        entry_path, &mut sub_comics, &mut sub_visited,
+                        &mut sub_folder_cache, &mut sub_added, 1
+                    );
+                } else if entry_path.is_file() {
+                    process_file_entry(entry_path, &mut sub_comics, &mut sub_added, &mut sub_folder_cache);
+                }
+                
+                Some(sub_comics)
+            })
+            .collect();
+        
+        for sub_comics in results {
+            comics.extend(sub_comics);
+        }
     }
 
     ScanResult {
         comics,
         error: None,
+    }
+}
+
+fn process_file_entry(
+    path: &Path,
+    comics: &mut Vec<ComicCandidate>,
+    added_image_folders: &mut HashSet<PathBuf>,
+    folder_cache: &mut HashMap<PathBuf, bool>,
+) {
+    if let Some(ext) = path.extension() {
+        let ext_lower = ext.to_string_lossy().to_lowercase();
+        
+        if COMIC_EXTENSIONS.contains(&ext_lower.as_str()) {
+            let title = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            
+            comics.push(ComicCandidate {
+                path: path.to_string_lossy().to_string(),
+                title,
+                source_type: "archive".to_string(),
+            });
+        } else if ext_lower == PDF_EXTENSION {
+            let title = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            
+            comics.push(ComicCandidate {
+                path: path.to_string_lossy().to_string(),
+                title,
+                source_type: "pdf".to_string(),
+            });
+        } else if IMAGE_EXTENSIONS.contains(&ext_lower.as_str()) {
+            let parent = path.parent().unwrap_or(Path::new("")).to_path_buf();
+            let has_comic_archive = if let Some(&cached) = folder_cache.get(&parent) {
+                cached
+            } else {
+                let result = folder_has_comic_archives(&parent);
+                folder_cache.insert(parent.clone(), result);
+                result
+            };
+            
+            if !has_comic_archive && !added_image_folders.contains(&parent) {
+                added_image_folders.insert(parent.clone());
+                
+                let title = parent
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                
+                comics.push(ComicCandidate {
+                    path: parent.to_string_lossy().to_string(),
+                    title,
+                    source_type: "folder".to_string(),
+                });
+            }
+        }
     }
 }
 
@@ -100,57 +185,7 @@ fn scan_directory_recursive(
         if path.is_dir() {
             scan_directory_recursive(&path, comics, visited, folder_cache, added_image_folders, current_depth + 1)?;
         } else if path.is_file() {
-            if let Some(ext) = path.extension() {
-                let ext_lower = ext.to_string_lossy().to_lowercase();
-                
-                if COMIC_EXTENSIONS.contains(&ext_lower.as_str()) {
-                    let title = path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    
-                    comics.push(ComicCandidate {
-                        path: path.to_string_lossy().to_string(),
-                        title,
-                        source_type: "archive".to_string(),
-                    });
-                } else if ext_lower == PDF_EXTENSION {
-                    let title = path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    
-                    comics.push(ComicCandidate {
-                        path: path.to_string_lossy().to_string(),
-                        title,
-                        source_type: "pdf".to_string(),
-                    });
-                } else if IMAGE_EXTENSIONS.contains(&ext_lower.as_str()) {
-                    let parent = path.parent().unwrap_or(Path::new("")).to_path_buf();
-                    let has_comic_archive = if let Some(&cached) = folder_cache.get(&parent) {
-                        cached
-                    } else {
-                        let result = folder_has_comic_archives(&parent);
-                        folder_cache.insert(parent.clone(), result);
-                        result
-                    };
-                    
-                    if !has_comic_archive && !added_image_folders.contains(&parent) {
-                        added_image_folders.insert(parent.clone());
-                        
-                        let title = parent
-                            .file_name()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        
-                        comics.push(ComicCandidate {
-                            path: parent.to_string_lossy().to_string(),
-                            title,
-                            source_type: "folder".to_string(),
-                        });
-                    }
-                }
-            }
+            process_file_entry(&path, comics, added_image_folders, folder_cache);
         }
     }
 

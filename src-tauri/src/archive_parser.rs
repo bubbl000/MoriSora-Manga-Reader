@@ -1,11 +1,9 @@
-// 参考: e:\06-xiangmu\处理中\new2\comic-shelf-main\src-tauri\src\lib.rs
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Cursor;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::Path;
 use crate::sort_utils::natural_cmp;
-use crate::archive_cache::{get_or_load_zip, get_or_extract_cbr};
+use crate::archive_cache::get_or_extract_cbr;
 use unrar::Archive;
 use lopdf::Document;
 
@@ -162,21 +160,7 @@ fn list_cbz_images(path: &str) -> Result<Vec<ArchivePageInfo>, String> {
 }
 
 fn read_cbz_image_entry(path: &str, entry_path: &str) -> Result<Vec<u8>, String> {
-    // 使用缓存的 ZIP 数据，Arc::clone 仅增加引用计数
-    let data = get_or_load_zip(path)?;
-    
-    let cursor = Cursor::new((*data).clone());
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| format!("无法读取CBZ档案 {}: {}", path, e))?;
-
-    let mut entry = archive.by_name(entry_path)
-        .map_err(|e| format!("找不到CBZ条目 {}: {}", entry_path, e))?;
-    
-    let mut bytes = Vec::new();
-    entry.read_to_end(&mut bytes)
-        .map_err(|e| format!("读取CBZ条目失败 {}: {}", entry_path, e))?;
-
-    Ok(bytes)
+    crate::archive_cache::get_or_load_zip_entry(path, entry_path)
 }
 
 fn list_cbr_images(path: &str) -> Result<Vec<ArchivePageInfo>, String> {

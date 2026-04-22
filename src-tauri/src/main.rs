@@ -12,78 +12,13 @@ mod settings;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use database::AppState;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
 
 /// Maximum recursion depth to prevent stack overflow
 const MAX_RECURSION_DEPTH: usize = 20;
-const MAX_CACHE_SIZE: usize = 30;
-
-// 图片后端压缩功能
-use std::io::Cursor as IoCursor;
-use image::GenericImageView;
-
-/// 压缩图片缓存：缓存键为 "path:max_width:quality"
-static COMPRESSED_CACHE: LazyLock<Mutex<HashMap<String, Arc<Vec<u8>>>>> = 
-    LazyLock::new(|| Mutex::new(HashMap::with_capacity(MAX_CACHE_SIZE)));
-static CACHE_ORDER: LazyLock<Mutex<Vec<String>>> = 
-    LazyLock::new(|| Mutex::new(Vec::with_capacity(MAX_CACHE_SIZE)));
-
-/// 压缩图片并缓存结果
-/// 将图片缩放到最大宽度 1920px，质量 85%
-fn compress_image_bytes(path: &str, data: &[u8], max_width: u32, quality: u8) -> Result<Arc<Vec<u8>>, String> {
-    let cache_key = format!("{}:{}:{}", path, max_width, quality);
-    
-    // 检查缓存
-    {
-        let cache = COMPRESSED_CACHE.lock().unwrap();
-        if let Some(cached) = cache.get(&cache_key) {
-            return Ok(Arc::clone(cached));
-        }
-    }
-    
-    // 缓存未命中，执行压缩
-    let img = image::load_from_memory(data)
-        .map_err(|e| format!("图片解码失败: {}", e))?;
-    
-    let (w, h) = img.dimensions();
-    let img = if w > max_width {
-        let ratio = max_width as f32 / w as f32;
-        let new_h = (h as f32 * ratio) as u32;
-        img.resize(max_width, new_h, image::imageops::FilterType::Lanczos3)
-    } else {
-        img
-    };
-    
-    let estimated_size = (data.len() as f32 * 0.5) as usize;
-    let mut output = Vec::with_capacity(estimated_size.max(1024));
-    let mut cursor = IoCursor::new(&mut output);
-    img.write_to(&mut cursor, image::ImageFormat::Jpeg)
-        .map_err(|e| format!("图片编码失败: {}", e))?;
-    
-    let result = Arc::new(output);
-    
-    // 存入缓存
-    {
-        let mut cache = COMPRESSED_CACHE.lock().unwrap();
-        let mut order = CACHE_ORDER.lock().unwrap();
-        
-        // LRU 淘汰：如果缓存已满，移除最旧的
-        if cache.len() >= MAX_CACHE_SIZE {
-            if let Some(oldest) = order.first().cloned() {
-                cache.remove(&oldest);
-                order.remove(0);
-            }
-        }
-        
-        cache.insert(cache_key.clone(), Arc::clone(&result));
-        order.push(cache_key);
-    }
-    
-    Ok(result)
-}
 
 #[tauri::command]
 fn read_image_bytes(file_path: String) -> Result<Vec<u8>, String> {
@@ -92,26 +27,39 @@ fn read_image_bytes(file_path: String) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-fn scan_directory(app: AppHandle, directory: String) -> library_scanner::ScanResult {
-    events::emit_scan_progress(&app, "started", "开始扫描...", Some(0.0));
-    let result = library_scanner::scan_comic_directory(&directory);
-    events::emit_scan_progress(&app, "completed", "扫描完成", Some(100.0));
-    result
+async fn scan_directory(app: AppHandle, directory: String) -> library_scanner::ScanResult {
+    let app_clone = app.clone();
+    let dir_clone = directory.clone();
+    tokio::task::spawn_blocking(move || {
+        events::emit_scan_progress(&app_clone, "started", "开始扫描...", Some(0.0));
+        let result = library_scanner::scan_comic_directory(&dir_clone);
+        events::emit_scan_progress(&app_clone, "completed", "扫描完成", Some(100.0));
+        result
+    }).await.unwrap()
 }
 
 #[tauri::command]
-fn get_folder_images(folder: String) -> Vec<String> {
-    library_scanner::get_folder_images(&folder)
+async fn get_folder_images(folder: String) -> Vec<String> {
+    tokio::task::spawn_blocking(move || {
+        library_scanner::get_folder_images(&folder)
+    }).await.unwrap()
 }
 
 #[tauri::command]
-fn get_archive_images(path: String) -> Result<Vec<archive_parser::ArchivePageInfo>, String> {
-    archive_parser::list_archive_images(&path)
+async fn get_archive_images(path: String) -> Result<Vec<archive_parser::ArchivePageInfo>, String> {
+    let path_clone = path.clone();
+    tokio::task::spawn_blocking(move || {
+        archive_parser::list_archive_images(&path_clone)
+    }).await.unwrap()
 }
 
 #[tauri::command]
-fn get_archive_image_bytes(path: String, entry_path: String) -> Result<Vec<u8>, String> {
-    archive_parser::read_archive_image_bytes(&path, &entry_path)
+async fn get_archive_image_bytes(path: String, entry_path: String) -> Result<Vec<u8>, String> {
+    let path_clone = path.clone();
+    let entry_clone = entry_path.clone();
+    tokio::task::spawn_blocking(move || {
+        archive_parser::read_archive_image_bytes(&path_clone, &entry_clone)
+    }).await.unwrap()
 }
 
 #[tauri::command]

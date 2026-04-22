@@ -1760,6 +1760,7 @@ dependencies = [
  "num-traits",
  "png",
  "qoi",
+ "rayon",
  "tiff",
 ]
 
@@ -2119,6 +2120,8 @@ dependencies = [
  "dirs 5.0.1",
  "image",
  "lopdf",
+ "parking_lot",
+ "rayon",
  "regex",
  "rusqlite",
  "serde",
@@ -2127,6 +2130,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-shell",
+ "tokio",
  "unrar",
  "windows 0.58.0",
  "zip",
@@ -4294,9 +4298,23 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
+ "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
