@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { saveComicMetadata, batchSaveComicMetadata, getComicIdByPath, getComicByPath, ComicMetadata, ReadingProgress, Tag } from '../services/databaseService'
+import { saveComicMetadata, batchSaveComicMetadata, getAllComicsMetadata, getComicIdByPath, getComicByPath, ComicMetadata, ReadingProgress, Tag } from '../services/databaseService'
 import { SourceType, isValidSourceType, getSourceTypeDisplayName, inferSourceType } from '../types/sourceType'
 
 // 全局封面缓存：path -> blobUrl
@@ -143,7 +143,7 @@ interface MangaStore {
   removeLibraryPath: (path: string) => Promise<void>
   scanAndLoad: () => Promise<void>
   saveToDatabase: (manga: MangaItem) => Promise<void>
-  updateReadingProgress: (mangaId: string, currentPage: number, totalPages: number) => Promise<void>
+  updateReadingProgress: (mangaId: string, currentPage: number, totalPages: number, mangaPath?: string) => Promise<void>
   toggleFavorite: (manga: MangaItem) => Promise<void>
   selectFolder: (folderPath: string) => void
   selectManga: (manga: MangaItem | null) => Promise<void>
@@ -255,9 +255,7 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
   try {
     const allManga: MangaItem[] = []
     const allComics: ComicMetadata[] = []
-    let id = 1
 
-    // 使用 Promise.all 并行扫描多个库路径
     const scanResults = await Promise.allSettled(
       paths.map(async (path) => {
         const result = await invoke<{
@@ -273,7 +271,7 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
         console.error('扫描目录失败:', scanResult.reason)
         continue
       }
-      const { path, result } = scanResult.value
+      const { result } = scanResult.value
       if (result.comics) {
           for (const comic of result.comics) {
             const folderPath =
@@ -289,7 +287,7 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
                 : comic.source_type.toUpperCase()
 
             const mangaItem: MangaItem = {
-              id: String(id++),
+              id: '0',
               title: comic.title,
               path: comic.path,
               folderPath,
@@ -318,8 +316,32 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
       }
 
     if (allComics.length > 0) {
-      await batchSaveComicMetadata(allComics)
+      const dbIds = await batchSaveComicMetadata(allComics)
+      allManga.forEach((manga, i) => {
+        if (i < dbIds.length) {
+          manga.id = String(dbIds[i])
+        }
+      })
     }
+
+    const allDbComics = await getAllComicsMetadata()
+    const progressMap = new Map<string, { current_page: number; total_pages: number }>()
+    allDbComics.forEach(c => {
+      if (c.path) {
+        progressMap.set(c.path, {
+          current_page: c.current_page || 0,
+          total_pages: c.total_pages || 0,
+        })
+      }
+    })
+    allManga.forEach(manga => {
+      const progress = progressMap.get(manga.path)
+      if (progress) {
+        manga.currentPage = progress.current_page
+        manga.totalPages = progress.total_pages
+        manga.progressPercentage = progress.total_pages > 0 ? (progress.current_page / progress.total_pages) * 100 : 0
+      }
+    })
 
     let allSubfolders: string[] = []
     if (paths.length > 0) {
@@ -327,7 +349,6 @@ async function scanAndBuildMangaList(params: ScanAndBuildParams): Promise<ScanBu
         allSubfolders = await invoke<string[]>('get_all_subfolders', { rootPath: paths[0] })
       } catch (e) {
         console.error('获取子文件夹列表失败:', e)
-        set({ error: '获取子文件夹列表失败' })
       }
     }
 
@@ -485,23 +506,37 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
     }
   },
 
-  updateReadingProgress: async (mangaId: string, currentPage: number, totalPages: number) => {
+  updateReadingProgress: async (mangaId: string, currentPage: number, totalPages: number, mangaPath?: string) => {
     try {
-      const manga = get().mangaList.find(m => m.id === mangaId)
-      if (manga) {
+      let targetManga = get().mangaList.find(m => m.id === mangaId)
+      if (!targetManga && mangaPath) {
+        targetManga = get().mangaList.find(m => m.path === mangaPath)
+      }
+      if (targetManga) {
+        const matchId = targetManga.id
         set(state => ({
           mangaList: state.mangaList.map(m => 
-            m.id === mangaId 
+            m.id === matchId 
               ? { ...m, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
               : m
           ),
-          selectedManga: state.selectedManga && state.selectedManga.id === mangaId
+          filteredMangaList: state.filteredMangaList.map(m => 
+            m.id === matchId 
+              ? { ...m, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
+              : m
+          ),
+          pagedMangaList: state.pagedMangaList.map(m => 
+            m.id === matchId 
+              ? { ...m, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
+              : m
+          ),
+          selectedManga: state.selectedManga && state.selectedManga.id === matchId
             ? { ...state.selectedManga, currentPage, totalPages, progressPercentage: totalPages > 0 ? (currentPage / totalPages) * 100 : 0 }
             : state.selectedManga
         }))
         
         await invoke('save_reading_progress', { 
-          comicId: parseInt(mangaId), 
+          comicId: parseInt(matchId), 
           currentPage, 
           totalPages 
         })

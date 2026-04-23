@@ -10,6 +10,8 @@ export interface ComicMetadata {
   last_opened?: string
   created_at?: string
   updated_at?: string
+  current_page?: number
+  total_pages?: number
 }
 
 export interface ReadingProgress {

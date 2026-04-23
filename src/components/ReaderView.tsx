@@ -509,7 +509,13 @@ function ReaderView() {
       setMangaPath(path)
       setSourceType(type)
       loadImages(path, type)
-      // 注意：打开时不自动恢复进度，用户需手动点击"恢复进度"按钮
+      // 打开时自动获取comicId，使保存进度功能可用
+      databaseService.getComicByPath(path).then(comic => {
+        if (comic && comic.id) {
+          setComicId(comic.id)
+        }
+      }).catch(err => console.error('获取漫画ID失败:', err))
+      // 注意：打开时不自动恢复阅读页码，用户需手动点击"恢复进度"按钮
     }
   }, [])
 
@@ -537,12 +543,16 @@ function ReaderView() {
     }
     try {
       await databaseService.saveReadingProgress(comicId, currentPage, totalPages)
+      const updateStore = useMangaStore.getState().updateReadingProgress
+      if (updateStore) {
+        await updateStore(String(comicId), currentPage, totalPages, mangaPath)
+      }
       showNotification(`进度已保存: 第 ${currentPage} 页`)
     } catch (error) {
       showNotification('保存进度失败')
       console.error('保存阅读进度失败:', error)
     }
-  }, [comicId, currentPage, totalPages, showNotification])
+  }, [comicId, currentPage, totalPages, mangaPath, showNotification])
 
   /**
    * Scroll 模式按需加载：加载指定范围的页码
@@ -672,10 +682,13 @@ function ReaderView() {
 
   const handleClose = async () => {
     try {
-      // 关闭前自动保存阅读进度
       if (comicId && totalPages > 0) {
         try {
           await databaseService.saveReadingProgress(comicId, currentPage, totalPages)
+          const updateStore = useMangaStore.getState().updateReadingProgress
+          if (updateStore) {
+            await updateStore(String(comicId), currentPage, totalPages, mangaPath)
+          }
         } catch (error) {
           console.error('自动保存进度失败:', error)
         }

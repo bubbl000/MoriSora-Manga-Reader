@@ -93,6 +93,10 @@ pub struct ComicMetadata {
     pub last_opened: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub current_page: i64,
+    #[serde(default)]
+    pub total_pages: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,6 +262,8 @@ fn row_to_comic_metadata(row: &rusqlite::Row) -> rusqlite::Result<ComicMetadata>
         last_opened: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+        current_page: row.get(8).unwrap_or(0),
+        total_pages: row.get(9).unwrap_or(0),
     })
 }
 
@@ -327,12 +333,16 @@ pub fn upsert_comic_metadata(state: &AppState, comic: &ComicMetadata) -> Result<
     })
 }
 
-/// 根据路径查询漫画
+/// 根据路径查询漫画（包含阅读进度）
 pub fn get_comic_by_path(state: &AppState, path: &str) -> Result<Option<ComicMetadata>, String> {
     state.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, source_type, page_count, last_opened, created_at, updated_at 
-             FROM comic_metadata WHERE path = ?1"
+            "SELECT c.id, c.path, c.title, c.source_type, c.page_count, c.last_opened, c.created_at, c.updated_at,
+                    COALESCE(r.current_page, 0) as current_page,
+                    COALESCE(r.total_pages, 0) as total_pages
+             FROM comic_metadata c
+             LEFT JOIN reading_progress r ON c.id = r.comic_id
+             WHERE c.path = ?1"
         )?;
         
         Ok(stmt.query_row(params![path], row_to_comic_metadata)
@@ -368,12 +378,16 @@ pub fn count_comics_in_folder(state: &AppState, folder_path: &str) -> Result<usi
     Ok(count as usize)
 }
 
-/// 查询所有漫画
+/// 查询所有漫画（包含阅读进度）
 pub fn get_all_comics(state: &AppState) -> Result<Vec<ComicMetadata>, String> {
     state.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, path, title, source_type, page_count, last_opened, created_at, updated_at 
-             FROM comic_metadata ORDER BY title ASC"
+            "SELECT c.id, c.path, c.title, c.source_type, c.page_count, c.last_opened, c.created_at, c.updated_at,
+                    COALESCE(r.current_page, 0) as current_page,
+                    COALESCE(r.total_pages, 0) as total_pages
+             FROM comic_metadata c
+             LEFT JOIN reading_progress r ON c.id = r.comic_id
+             ORDER BY c.title ASC"
         )?;
         
         let comics: Vec<ComicMetadata> = stmt.query_map(params![], row_to_comic_metadata)?
@@ -481,13 +495,16 @@ pub fn is_favorite(state: &AppState, comic_id: i64) -> Result<bool, String> {
     })
 }
 
-/// 获取所有收藏的漫画
+/// 获取所有收藏的漫画（包含阅读进度）
 pub fn get_favorite_comics(state: &AppState) -> Result<Vec<ComicMetadata>, String> {
     state.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT c.id, c.path, c.title, c.source_type, c.page_count, c.last_opened, c.created_at, c.updated_at 
+            "SELECT c.id, c.path, c.title, c.source_type, c.page_count, c.last_opened, c.created_at, c.updated_at,
+                    COALESCE(r.current_page, 0) as current_page,
+                    COALESCE(r.total_pages, 0) as total_pages
              FROM comic_metadata c
              INNER JOIN favorites f ON c.id = f.comic_id
+             LEFT JOIN reading_progress r ON c.id = r.comic_id
              ORDER BY f.created_at DESC"
         )?;
         
@@ -602,15 +619,18 @@ pub fn delete_tag_by_name(state: &AppState, tag_name: &str) -> Result<(), String
     })
 }
 
-/// 根据标签查询漫画
+/// 根据标签查询漫画（包含阅读进度）
 pub fn get_comics_by_tag(state: &AppState, tag_name: &str) -> Result<Vec<ComicMetadata>, String> {
     state.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT c.id, c.path, c.title, c.source_type, c.page_count, 
-                    c.last_opened, c.created_at, c.updated_at 
+            "SELECT c.id, c.path, c.title, c.source_type, c.page_count,
+                    c.last_opened, c.created_at, c.updated_at,
+                    COALESCE(r.current_page, 0) as current_page,
+                    COALESCE(r.total_pages, 0) as total_pages
              FROM comic_metadata c
              INNER JOIN comic_tags ct ON c.id = ct.comic_id
              INNER JOIN tags t ON ct.tag_id = t.id
+             LEFT JOIN reading_progress r ON c.id = r.comic_id
              WHERE t.name = ?1
              ORDER BY c.title ASC"
         )?;
