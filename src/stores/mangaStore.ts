@@ -4,6 +4,64 @@ import { listen } from '@tauri-apps/api/event'
 import { saveComicMetadata, batchSaveComicMetadata, getComicIdByPath, getComicByPath, ComicMetadata, ReadingProgress, Tag } from '../services/databaseService'
 import { SourceType, isValidSourceType, getSourceTypeDisplayName, inferSourceType } from '../types/sourceType'
 
+// 全局封面缓存：path -> blobUrl
+const coverCache = new Map<string, string>()
+// 正在生成中的封面 Promise
+const coverPromiseCache = new Map<string, Promise<string | null>>()
+
+// 封面串行队列，确保按顺序逐个加载
+interface CoverRequest {
+  path: string
+  sourceType: string
+  resolve: (url: string | null) => void
+}
+const coverRequestQueue: CoverRequest[] = []
+let isProcessingCover = false
+
+async function processNextCover() {
+  if (isProcessingCover || coverRequestQueue.length === 0) return
+  isProcessingCover = true
+
+  const request = coverRequestQueue.shift()!
+  try {
+    const bytes = await invoke<number[]>('generate_cover_thumbnail', { path: request.path })
+    if (bytes && bytes.length > 0) {
+      const blob = new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' })
+      const url = URL.createObjectURL(blob)
+      coverCache.set(request.path, url)
+      coverPromiseCache.delete(request.path)
+      request.resolve(url)
+    } else {
+      request.resolve(null)
+    }
+  } catch {
+    request.resolve(null)
+  }
+  coverPromiseCache.delete(request.path)
+
+  isProcessingCover = false
+  // 下一个封面
+  processNextCover()
+}
+
+/**
+ * 按顺序串行生成封面，确保一个完成后再加载下一个
+ */
+export async function generateCoverThumbnail(mangaPath: string, sourceType: string): Promise<string | null> {
+  if (sourceType === 'folder') return null
+  if (coverCache.has(mangaPath)) return coverCache.get(mangaPath) || null
+  if (coverPromiseCache.has(mangaPath)) return coverPromiseCache.get(mangaPath) || null
+
+  const promise = new Promise<string | null>((resolve) => {
+    coverRequestQueue.push({ path: mangaPath, sourceType, resolve })
+    // 触发队列处理
+    processNextCover()
+  })
+
+  coverPromiseCache.set(mangaPath, promise)
+  return promise
+}
+
 // 全局拖拽文件回调
 let globalDropCallback: ((paths: string[]) => void) | null = null
 
@@ -72,11 +130,13 @@ interface MangaStore {
   allTags: Tag[]
   currentPage: number
   pageSize: number
+  isPaginationMode: boolean
   totalCount: number
   totalFilteredCount: number
   totalPages: number
   sortBy: string
   coverSize: number
+  autoPageInterval: number
 
   loadLibrary: () => Promise<void>
   addLibraryPath: (path: string) => Promise<void>
@@ -93,7 +153,10 @@ interface MangaStore {
   toggleTagManagement: () => void
   setSortBy: (sortBy: string) => void
   setPage: (page: number) => void
+  setPageSize: (size: number) => void
+  togglePaginationMode: () => void
   setCoverSize: (size: number) => void
+  setAutoPageInterval: (interval: number) => void
   applyFilters: () => Promise<void>
   loadMangaTags: (manga: MangaItem) => Promise<void>
   addTag: (manga: MangaItem, tagName: string) => Promise<void>
@@ -318,12 +381,14 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
   mangaTags: [],
   allTags: [],
   currentPage: 1,
-  pageSize: 50,
+  pageSize: 20,
+  isPaginationMode: true,
   totalCount: 0,
   totalFilteredCount: 0,
   totalPages: 0,
   sortBy: 'name',
   coverSize: 180,
+  autoPageInterval: 3000,
 
   loadLibrary: async () => {
     set({ isLoading: true, error: null })
@@ -540,10 +605,26 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
 
   setPage: (page: number) => {
     set({ currentPage: page })
+    get().applyFilters()
+  },
+
+  setPageSize: (size: number) => {
+    set({ pageSize: size, currentPage: 1 })
+    get().applyFilters()
+  },
+
+  togglePaginationMode: () => {
+    const { isPaginationMode } = get()
+    set({ isPaginationMode: !isPaginationMode, currentPage: 1 })
+    get().applyFilters()
   },
 
   setCoverSize: (size: number) => {
     set({ coverSize: size })
+  },
+
+  setAutoPageInterval: (interval: number) => {
+    set({ autoPageInterval: interval })
   },
 
   applyFilters: async () => {
@@ -601,16 +682,28 @@ export const useMangaStore = create<MangaStore>((set, get) => ({
     })
     
     const totalCount = filtered.length
-    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
-    const start = (currentPage - 1) * pageSize
-    const paged = filtered.slice(start, start + pageSize)
+    const { isPaginationMode } = get()
     
-    set({ 
-      filteredMangaList: filtered,
-      pagedMangaList: paged,
-      totalFilteredCount: totalCount,
-      totalPages,
-    })
+    if (isPaginationMode) {
+      const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
+      const start = (currentPage - 1) * pageSize
+      const paged = filtered.slice(start, start + pageSize)
+      
+      set({ 
+        filteredMangaList: filtered,
+        pagedMangaList: paged,
+        totalFilteredCount: totalCount,
+        totalPages,
+      })
+    } else {
+      // 全部展示模式
+      set({ 
+        filteredMangaList: filtered,
+        pagedMangaList: filtered,
+        totalFilteredCount: totalCount,
+        totalPages: 1,
+      })
+    }
   },
 
   loadMangaTags: async (manga: MangaItem) => {

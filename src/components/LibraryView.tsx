@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { useMangaStore, MangaItem, FolderNode, setDropCallback, initDragDropListener } from '../stores/mangaStore'
+import { useMangaStore, MangaItem, FolderNode, setDropCallback, initDragDropListener, generateCoverThumbnail } from '../stores/mangaStore'
 import SettingsDialog from './SettingsDialog'
 import {
   RxGear,
@@ -353,6 +353,19 @@ const MangaCard = React.memo(function MangaCard({ manga, onClick, isSelected, on
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showRenameDialog, setShowRenameDialog] = useState(false)
   const [newMangaName, setNewMangaName] = useState('')
+  const [coverUrl, setCoverUrl] = useState<string | null>(manga.coverThumbnail)
+  const [coverLoading, setCoverLoading] = useState(false)
+
+  // 组件挂载时立即请求封面（串行队列会按顺序处理）
+  useEffect(() => {
+    if (coverUrl || manga.sourceType === 'folder') return
+
+    setCoverLoading(true)
+    generateCoverThumbnail(manga.path, manga.sourceType).then((url) => {
+      if (url) setCoverUrl(url)
+      setCoverLoading(false)
+    })
+  }, [manga.path, manga.sourceType, coverUrl])
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 0) {
@@ -433,10 +446,10 @@ const MangaCard = React.memo(function MangaCard({ manga, onClick, isSelected, on
   return (
     <>
       <div
-        className={`flex flex-col cursor-pointer transition-all rounded overflow-hidden ${
+        className={`flex flex-col cursor-pointer transition-all overflow-hidden ${
           isSelected ? 'ring-2 ring-accent' : 'hover:ring-1 hover:ring-accent/50'
         }`}
-        style={{ width: coverSize }}
+        style={{ width: coverSize, borderRadius: '6px', backgroundColor: '#272727', border: '2px solid transparent' }}
         onClick={onClick}
         onContextMenu={handleContextMenu}
         onMouseDown={handleMouseDown}
@@ -455,33 +468,62 @@ const MangaCard = React.memo(function MangaCard({ manga, onClick, isSelected, on
         }}
       >
         <div
-          className="bg-bg-hover flex items-center justify-center relative"
-          style={{ width: coverSize, height: coverSize * 1.4 }}
+          className="flex items-center justify-center relative overflow-hidden"
+          style={{ width: coverSize, height: coverSize * 1.35, backgroundColor: '#1E1E1E', borderRadius: '5px 5px 0 0' }}
         >
-          {manga.coverThumbnail ? (
-            <img src={manga.coverThumbnail} alt={manga.title} className="w-full h-full object-cover" />
+          {coverUrl ? (
+            <img src={coverUrl} alt={manga.title} className="w-full h-full object-cover" />
+          ) : coverLoading ? (
+            <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
           ) : (
-            <span className="text-text-muted text-3xl">📖</span>
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z" fill="#505050"/>
+            </svg>
           )}
           {manga.progressPercentage > 0 && (
-            <div className="absolute bottom-0 left-0 right-0 bg-black/60">
+            <div className="absolute bottom-0 left-0 right-0" style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}>
               <div
-                className="h-0.5 bg-accent"
-                style={{ width: `${manga.progressPercentage}%` }}
+                className="bg-accent"
+                style={{ width: `${manga.progressPercentage}%`, height: '3px', borderRadius: '1.5px' }}
               />
             </div>
           )}
           {manga.isFavorite && (
-            <RxStarFilled className="absolute top-1.5 right-1.5 w-4 h-4 text-accent drop-shadow" />
+            <RxStarFilled className="absolute top-1.5 right-1.5 w-4 h-4 text-accent drop-shadow" style={{ fontSize: '18px' }} />
           )}
         </div>
-        <div className="p-2 bg-bg-card">
-          <p className="text-text-primary text-xs truncate" title={manga.title}>
+        <div className="px-2 pt-1.5 pb-2" style={{ backgroundColor: '#272727' }}>
+          <p
+            className="truncate font-medium"
+            title={manga.title}
+            style={{ fontSize: '11px', color: '#C8C8C8', lineHeight: '17px', maxHeight: '34px' }}
+          >
             {manga.title}
           </p>
-          <p className="text-text-muted text-[10px] mt-0.5">
+          <p className="text-[10px] mt-0.5" style={{ color: '#A0A0A0' }}>
             {manga.formatText}{manga.totalPages > 0 ? ` · ${manga.totalPages}P` : ''}
           </p>
+          {/* 阅读进度条 - WPF样式 */}
+          <div className="mt-1.5">
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-[10px]" style={{ color: '#909090' }}>
+                {manga.totalPages > 0
+                  ? (manga.currentPage > 0 ? `第 ${manga.currentPage} 页` : '未开始')
+                  : '未开始'}
+              </span>
+              <span className="text-[10px]" style={{ color: '#909090' }}>
+                {manga.totalPages > 0
+                  ? `${Math.round(((manga.currentPage || 0) / manga.totalPages) * 100)}%`
+                  : '0%'}
+              </span>
+            </div>
+            <div className="w-full overflow-hidden" style={{ height: '3px', backgroundColor: '#333333', borderRadius: '1.5px' }}>
+              <div
+                className="h-full bg-accent transition-all duration-300"
+                style={{ width: manga.totalPages > 0 ? `${((manga.currentPage || 0) / manga.totalPages) * 100}%` : '0%', borderRadius: '1.5px' }}
+              />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -615,6 +657,10 @@ function LibraryView() {
     toggleTagCloud,
     setSortBy,
     setPage,
+    setPageSize,
+    pageSize,
+    isPaginationMode,
+    togglePaginationMode,
     setCoverSize,
     toggleFavorite,
     addTag,
@@ -1253,8 +1299,33 @@ function LibraryView() {
           <>
             {/* Manga Toolbar (library / favorites / tag-comics view) */}
             <div className="h-10 flex-shrink-0 bg-bg-panel border-b border-border-1 flex items-center px-3 gap-2">
+              {/* 分页控件 */}
+              {totalPages > 1 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setPage(Math.max(1, currentPage - 1))}
+                    disabled={currentPage === 1}
+                    className="px-2 py-1 text-xs bg-bg-input border border-border-1 rounded text-text-secondary disabled:text-text-muted hover:text-text-primary hover:border-accent transition-colors"
+                    title="上一页"
+                  >
+                    ◀
+                  </button>
+                  <span className="text-text-muted text-xs min-w-[40px] text-center">
+                    {currentPage}/{totalPages}
+                  </span>
+                  <button
+                    onClick={() => setPage(Math.min(totalPages, currentPage + 1))}
+                    disabled={currentPage === totalPages}
+                    className="px-2 py-1 text-xs bg-bg-input border border-border-1 rounded text-text-secondary disabled:text-text-muted hover:text-text-primary hover:border-accent transition-colors"
+                    title="下一页"
+                  >
+                    ▶
+                  </button>
+                </div>
+              )}
+
               <span className="text-text-secondary text-xs">
-                {isScanning ? '扫描中...' : selectedTag ? `标签 "${selectedTag}"：${totalFilteredCount} 部漫画` : `${totalFilteredCount} 部漫画`}
+                {isScanning ? '扫描中...' : selectedTag ? `标签 "${selectedTag}"：${totalFilteredCount} 部漫画` : `全部（${totalFilteredCount}）`}
               </span>
 
               {selectedTag && (
@@ -1304,6 +1375,19 @@ function LibraryView() {
                 )}
               </div>
 
+              {/* 分页模式 / 全部展示 切换 */}
+              <button
+                onClick={() => togglePaginationMode()}
+                className={`px-2 py-1 text-xs rounded transition-colors border ${
+                  isPaginationMode
+                    ? 'bg-accent text-accent-text font-medium border-accent'
+                    : 'bg-bg-input text-text-secondary hover:text-text-primary border-border-1'
+                }`}
+                title={isPaginationMode ? '当前为分页模式，点击切换为全部展示' : '当前为全部展示，点击切换为分页模式'}
+              >
+                {isPaginationMode ? '分页模式' : '全部展示'}
+              </button>
+
               {/* Cover Size Slider */}
               <div className="flex items-center gap-1.5 text-text-muted text-xs">
                 <span>封面</span>
@@ -1316,6 +1400,23 @@ function LibraryView() {
                   className="w-16 accent-accent"
                 />
               </div>
+
+              {/* 刷新按钮 */}
+              <button
+                onClick={() => {
+                  if (libraryPaths.length > 0) {
+                    scanAndLoad()
+                  }
+                }}
+                disabled={isScanning}
+                className="px-2 py-1 bg-bg-input border border-border-1 rounded text-text-secondary hover:text-text-primary hover:border-accent text-xs flex items-center gap-1 transition-colors disabled:opacity-50"
+                title="重新扫描库"
+              >
+                <svg className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                刷新
+              </button>
             </div>
 
             {/* Manga Grid Content */}
@@ -1335,16 +1436,18 @@ function LibraryView() {
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center h-full text-center">
-                  <span className="text-6xl mb-4">📚</span>
-                  <p className="text-text-secondary text-lg mb-2">
-                    {currentViewMode === 'favorites' ? '暂无收藏漫画' : searchQuery ? '没有找到匹配的漫画' : '书库为空'}
+                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="mb-4 opacity-30">
+                    <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z" fill="#808080"/>
+                  </svg>
+                  <p className="mb-2 font-semibold" style={{ fontSize: '16px', color: '#808080' }}>
+                    {currentViewMode === 'favorites' ? '暂无收藏漫画' : searchQuery ? '没有找到匹配的漫画' : '暂无漫画'}
                   </p>
-                  <p className="text-text-muted text-sm">
+                  <p style={{ fontSize: '12px', color: '#505050' }}>
                     {currentViewMode === 'favorites'
                       ? '点击漫画卡片的星号图标添加收藏'
                       : searchQuery
                       ? '请尝试调整搜索条件'
-                      : '请点击设置按钮添加漫画库路径'
+                      : '请在设置中添加漫画资源库地址'
                     }
                   </p>
                 </div>
@@ -1385,7 +1488,7 @@ function LibraryView() {
 
       {/* Right Panel - Details */}
       {selectedManga ? (
-        <div className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex flex-col overflow-hidden" style={{ width: rightPanelWidth }}>
+        <div className="flex-shrink-0 border-l border-border-1 flex flex-col overflow-hidden" style={{ width: rightPanelWidth, backgroundColor: '#212121', borderRadius: '0 0 8px 0' }}>
           {/* Header */}
           <div className="p-3 border-b border-border-1 flex items-center justify-between">
             <h3 className="text-sm font-medium text-text-primary">漫画详情</h3>
@@ -1401,8 +1504,8 @@ function LibraryView() {
             {/* Cover */}
             <div className="p-4 flex justify-center">
               <div
-                className="bg-bg-card rounded overflow-hidden"
-                style={{ width: 160, height: 224 }}
+                className="overflow-hidden"
+                style={{ width: 160, height: 224, backgroundColor: '#1E1E1E', borderRadius: '5px' }}
               >
                 {selectedManga.coverThumbnail ? (
                   <img
@@ -1412,7 +1515,9 @@ function LibraryView() {
                   />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">
-                    <span className="text-text-muted text-4xl">📖</span>
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z" fill="#505050"/>
+                    </svg>
                   </div>
                 )}
               </div>
@@ -1420,51 +1525,85 @@ function LibraryView() {
 
             {/* Title */}
             <div className="px-4 pb-3">
-              <h2 className="text-text-primary text-sm font-medium truncate" title={selectedManga.title}>
+              <h2 className="font-medium truncate" title={selectedManga.title} style={{ fontSize: '13px', color: '#E0E0E0' }}>
                 {selectedManga.title}
               </h2>
             </div>
 
+            {/* Format Tag */}
+            <div className="px-4 pb-3">
+              <span
+                className="inline-block font-bold"
+                style={{ backgroundColor: '#2A3010', color: '#CBE93A', borderRadius: '3px', padding: '2px 7px', fontSize: '10px' }}
+              >
+                {selectedManga.formatText}
+              </span>
+            </div>
+
             {/* Info Table */}
             <div className="px-4 pb-3">
-              <div className="space-y-1.5">
-                <div className="flex text-xs">
-                  <span className="text-text-muted w-16">格式</span>
-                  <span className="text-text-primary">{selectedManga.formatText}</span>
-                </div>
-                <div className="flex text-xs">
-                  <span className="text-text-muted w-16">页数</span>
-                  <span className="text-text-primary">
+              <div className="space-y-2">
+                {/* 页数 */}
+                <div className="flex items-center">
+                  <span className="w-16 font-bold" style={{ fontSize: '10px', color: '#505050' }}>页数</span>
+                  <span style={{ fontSize: '11px', color: '#686868' }}>
                     {selectedManga.totalPages > 0 ? `${selectedManga.totalPages} 页` : '-'}
                   </span>
                 </div>
-                <div className="flex text-xs">
-                  <span className="text-text-muted w-16">进度</span>
-                  <span className="text-text-primary">
+                {/* 进度 */}
+                <div className="flex items-center">
+                  <span className="w-16 font-bold" style={{ fontSize: '10px', color: '#505050' }}>进度</span>
+                  <span style={{ fontSize: '11px', color: '#686868' }}>
                     {selectedManga.currentPage > 0
                       ? `第 ${selectedManga.currentPage} 页`
                       : '未阅读'}
                   </span>
                 </div>
-                <div className="flex text-xs">
-                  <span className="text-text-muted w-16">添加日期</span>
-                  <span className="text-text-primary">
+                {/* 右侧详情面板进度条 - WPF样式 */}
+                <div className="mt-1">
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span style={{ fontSize: '10px', color: '#686868' }}>
+                      {selectedManga.totalPages > 0
+                        ? `${Math.round(((selectedManga.currentPage || 0) / selectedManga.totalPages) * 100)}%`
+                        : '0%'}
+                    </span>
+                    <span style={{ fontSize: '10px', color: '#686868' }}>
+                      {selectedManga.totalPages > 0 ? `${selectedManga.totalPages} 页` : '-'}
+                    </span>
+                  </div>
+                  <div className="w-full overflow-hidden" style={{ height: '3px', backgroundColor: '#333333', borderRadius: '1.5px' }}>
+                    <div
+                      className="h-full bg-accent transition-all duration-300"
+                      style={{ width: selectedManga.totalPages > 0 ? `${((selectedManga.currentPage || 0) / selectedManga.totalPages) * 100}%` : '0%', borderRadius: '1.5px' }}
+                    />
+                  </div>
+                </div>
+                {/* 分隔线 */}
+                <div className="w-full" style={{ height: '1px', backgroundColor: '#2E2E2E' }} />
+                {/* 添加日期 */}
+                <div className="flex items-center">
+                  <span className="w-16 font-bold" style={{ fontSize: '10px', color: '#505050' }}>添加日期</span>
+                  <span style={{ fontSize: '11px', color: '#686868' }}>
                     {selectedManga.addedDate
                       ? new Date(selectedManga.addedDate).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
                       : '-'}
                   </span>
                 </div>
-                <div className="flex text-xs">
-                  <span className="text-text-muted w-16">上次阅读</span>
-                  <span className="text-text-primary">
+                {/* 上次阅读 */}
+                <div className="flex items-center">
+                  <span className="w-16 font-bold" style={{ fontSize: '10px', color: '#505050' }}>上次阅读</span>
+                  <span style={{ fontSize: '11px', color: '#686868' }}>
                     {selectedManga.lastOpened
                       ? new Date(selectedManga.lastOpened).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
                       : '未阅读'}
                   </span>
                 </div>
-                <div className="flex text-xs">
-                  <span className="text-text-muted w-16">路径</span>
-                  <span className="text-text-primary truncate ml-1" title={selectedManga.path}>
+                {/* 分隔线 */}
+                <div className="w-full" style={{ height: '1px', backgroundColor: '#2E2E2E' }} />
+                {/* 路径 */}
+                <div className="flex items-start">
+                  <span className="w-16 font-bold flex-shrink-0" style={{ fontSize: '10px', color: '#505050' }}>路径</span>
+                  <span className="truncate" title={selectedManga.path} style={{ fontSize: '11px', color: '#686868' }}>
                     {selectedManga.path}
                   </span>
                 </div>
@@ -1497,9 +1636,9 @@ function LibraryView() {
             </div>
 
             {/* Tags */}
-            <div className="px-4 pb-4 border-t border-border-1 pt-3">
+            <div className="px-4 pb-4 pt-3" style={{ borderTop: '1px solid #2E2E2E' }}>
               <div className="flex items-center justify-between mb-2">
-                <h4 className="text-xs font-medium text-text-secondary flex items-center gap-1">
+                <h4 className="font-medium flex items-center gap-1" style={{ fontSize: '11px', color: '#909090' }}>
                   <HiTag className="w-3.5 h-3.5" />
                   标签
                 </h4>
@@ -1547,29 +1686,33 @@ function LibraryView() {
                   mangaTags.map((tag) => (
                     <span
                       key={tag.id}
-                      className="px-2 py-0.5 bg-bg-card border border-border-1 rounded text-xs text-text-secondary flex items-center gap-1"
+                      className="flex items-center gap-1"
+                      style={{ backgroundColor: '#252525', borderRadius: '4px', padding: '3px 6px', fontSize: '11px', color: '#A0A0A0' }}
                     >
                       {tag.name}
                       <button
                         onClick={() => handleRemoveTag(tag.id)}
-                        className="text-text-muted hover:text-red-400 transition-colors"
+                        className="hover:text-red-400 transition-colors"
+                        style={{ color: '#A0A0A0' }}
                       >
                         <RxCross2 className="w-3 h-3" />
                       </button>
                     </span>
                   ))
                 ) : (
-                  <p className="text-text-muted text-xs">暂无标签</p>
+                  <p style={{ fontSize: '11px', color: '#555555' }}>暂无标签</p>
                 )}
               </div>
             </div>
           </div>
         </div>
       ) : (
-        <div className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex items-center justify-center" style={{ width: rightPanelWidth }}>
+        <div className="flex-shrink-0 border-l border-border-1 flex items-center justify-center" style={{ width: rightPanelWidth, backgroundColor: '#212121', borderRadius: '0 0 8px 0' }}>
           <div className="text-center p-4">
-            <RxReader className="w-12 h-12 text-text-muted mx-auto mb-3 opacity-50" />
-            <p className="text-text-muted text-sm">选择漫画查看详情</p>
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="mx-auto mb-3" style={{ opacity: 0.3 }}>
+              <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z" fill="#808080"/>
+            </svg>
+            <p style={{ fontSize: '12px', color: '#505050' }}>选择漫画查看详情</p>
           </div>
         </div>
       )}

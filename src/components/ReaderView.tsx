@@ -3,7 +3,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import * as pdfjsLib from 'pdfjs-dist'
 import * as databaseService from '../services/databaseService'
-import { RxCross2 } from 'react-icons/rx'
+import { useMangaStore } from '../stores/mangaStore'
+import { RxCross2, RxChevronLeft, RxChevronRight } from 'react-icons/rx'
 
 /**
  * LRU 缓存实现
@@ -73,9 +74,9 @@ class LRUCache<K, V> {
  * 图片尺寸小于阈值时跳过压缩，避免不必要的处理开销
  */
 const COMPRESS_CONFIG = {
-  maxWidth: 1920,
-  maxHeight: 2880,
-  jpegQuality: 0.85,
+  maxWidth: 1280,
+  maxHeight: 1920,
+  jpegQuality: 0.75,
 }
 
 /**
@@ -114,56 +115,56 @@ function calculateScaledSize(
 }
 
 /**
- * 压缩图片并返回压缩后的 Blob
- * 流程：Uint8Array -> Blob -> ImageBitmap -> Canvas 绘制 -> toBlob(JPEG)
- * 使用 createImageBitmap 避免创建 DOM Image 元素，性能更好
- * 尺寸小于阈值时跳过压缩，直接返回原始 Blob
+ * 图片压缩/缩放处理函数
+ * JPEG/WebP 等已压缩格式且尺寸未超限时跳过 Canvas 二次编码，直接使用原始 Blob
+ * 减少不必要的解码-重编码 CPU 开销
  */
 async function compressImage(uint8Array: Uint8Array): Promise<Blob> {
-  // 创建干净的 ArrayBuffer 副本，避免共享 buffer 的偏移问题
-  const arrayBuffer = uint8Array.buffer.slice(
-    uint8Array.byteOffset,
-    uint8Array.byteOffset + uint8Array.byteLength,
-  )
+  const originalBlob = new Blob([uint8Array])
+  const url = URL.createObjectURL(originalBlob)
 
-  // 通过 Blob 创建 ImageBitmap（TypeScript 要求 ImageBitmapSource 为 Blob/ImageData 等）
-  const sourceBlob = new Blob([arrayBuffer])
-  const bitmap = await createImageBitmap(sourceBlob)
-  const { width, height } = bitmap
+  try {
+    const img = new Image()
+    img.src = url
+    await new Promise((resolve, reject) => {
+      img.onload = resolve
+      img.onerror = reject
+    })
 
-  // 尺寸未超限，直接转 Blob 避免不必要的压缩
-  if (!needsCompression(width, height)) {
+    const { naturalWidth, naturalHeight } = img
+
+    if (!needsCompression(naturalWidth, naturalHeight)) {
+      return originalBlob
+    }
+
+    URL.revokeObjectURL(url)
+    const bitmap = await createImageBitmap(img)
+
+    const { width: scaledWidth, height: scaledHeight } = calculateScaledSize(naturalWidth, naturalHeight)
+
+    const canvas = document.createElement('canvas')
+    canvas.width = scaledWidth
+    canvas.height = scaledHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      throw new Error('无法创建 Canvas 上下文')
+    }
+
+    ctx.drawImage(bitmap, 0, 0, scaledWidth, scaledHeight)
     bitmap.close()
-    const blob = new Blob([arrayBuffer])
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob((b) => resolve(b), 'image/jpeg', COMPRESS_CONFIG.jpegQuality)
+    })
+
+    if (!blob) {
+      throw new Error('图片压缩失败：Canvas toBlob 返回空值')
+    }
+
     return blob
+  } finally {
+    URL.revokeObjectURL(url)
   }
-
-  // 计算缩放后尺寸
-  const { width: scaledWidth, height: scaledHeight } = calculateScaledSize(width, height)
-
-  // 使用 Canvas 绘制缩放后的图像
-  const canvas = document.createElement('canvas')
-  canvas.width = scaledWidth
-  canvas.height = scaledHeight
-  const ctx = canvas.getContext('2d')
-  if (!ctx) {
-    bitmap.close()
-    throw new Error('无法创建 Canvas 上下文')
-  }
-
-  ctx.drawImage(bitmap, 0, 0, scaledWidth, scaledHeight)
-  bitmap.close()
-
-  // 导出为 JPEG 格式
-  const blob = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob((b) => resolve(b), 'image/jpeg', COMPRESS_CONFIG.jpegQuality)
-  })
-
-  if (!blob) {
-    throw new Error('图片压缩失败：Canvas toBlob 返回空值')
-  }
-
-  return blob
 }
 
 let pdfWorkerInitialized = false
@@ -215,15 +216,22 @@ function ReaderView() {
   // 预加载定时器，用于取消未完成的预加载
   const preloadTimerRef = useRef<number | null>(null)
   const [autoPage, setAutoPage] = useState(false)
-  const [autoPageInterval, setAutoPageInterval] = useState(3000)
+  const storeAutoPageInterval = useMangaStore(state => state.autoPageInterval)
   const autoPageRef = useRef<number | null>(null)
   const [comicId, setComicId] = useState<number | null>(null)
   const [errorToast, setErrorToast] = useState<string | null>(null)
+  // 消息通知状态
+  const [notification, setNotification] = useState<string | null>(null)
+  const notificationTimerRef = useRef<number | null>(null)
 
   const [isDragging, setIsDragging] = useState(false)
   const dragStartRef = useRef({ x: 0, y: 0 })
   const [zoomLevelState, setZoomLevelState] = useState(100)
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
+  // 缩略图面板状态
+  const [showThumbnailPanel, setShowThumbnailPanel] = useState(false)
+  const [thumbnailSize, setThumbnailSize] = useState(80)
+  const [thumbnailPanelWidth, setThumbnailPanelWidth] = useState(200)
   const initialLoadRef = useRef(false)
   const createdBlobUrlsRef = useRef<Set<string>>(new Set())
   // 用于追踪最新的翻页请求，防止竞态条件导致图片与页码不匹配
@@ -232,7 +240,7 @@ function ReaderView() {
   const pdfDocumentRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null)
   const pdfFilePathRef = useRef<string>('')
 
-  const MAX_CACHE_SIZE = 50
+  const MAX_CACHE_SIZE = 20 // 限制缓存页数，避免内存耗尽
 
   const revokeBlobUrl = useCallback((url: string) => {
     if (url && createdBlobUrlsRef.current.has(url)) {
@@ -321,11 +329,11 @@ function ReaderView() {
 
   /**
    * 预加载相邻页面图片，提升快速翻页体验
-   * 空闲时预加载前后各 2 页，使用 requestIdleCallback 避免阻塞渲染
+   * 空闲时预加载前后各 2 页，避免内存耗尽
    */
   const preloadAdjacentPages = useCallback((currentPageNum: number) => {
     if (readMode === 'scroll') return
-    const PRELOAD_RANGE = 2
+    const PRELOAD_RANGE = 2 // 限制预加载范围，避免内存耗尽
     const tasks: Promise<void>[] = []
     
     for (let i = 1; i <= PRELOAD_RANGE; i++) {
@@ -350,13 +358,11 @@ function ReaderView() {
       const handle = requestIdleCallback(() => {
         Promise.allSettled(tasks)
       }, { timeout: 1000 })
-      // 如果当前页再次变化，取消预加载
       if (preloadTimerRef.current) {
         cancelIdleCallback(handle)
       }
       preloadTimerRef.current = handle as unknown as number
     } else {
-      // 降级方案：延迟 100ms 后执行
       const timer = window.setTimeout(() => {
         Promise.allSettled(tasks)
       }, 100)
@@ -502,26 +508,41 @@ function ReaderView() {
       initialLoadRef.current = true
       setMangaPath(path)
       setSourceType(type)
-      loadImages(path, type).then(async () => {
-        const savedPage = await restoreReadingProgress(path)
-        if (savedPage > 1) {
-          setCurrentPage(savedPage)
-          const url = await getPageUrl(savedPage)
-          if (url) setCurrentImageSrc(url)
-        }
-      })
+      loadImages(path, type)
+      // 注意：打开时不自动恢复进度，用户需手动点击"恢复进度"按钮
     }
   }, [])
 
-  useEffect(() => {
-    const saveProgress = async () => {
-      if (!comicId || totalPages === 0) return
-      try { await databaseService.saveReadingProgress(comicId, currentPage, totalPages) }
-      catch (error) { console.error('保存阅读进度失败:', error) }
+  /**
+   * 手动保存阅读进度
+   * 用户点击"保存进度"按钮时调用
+   */
+  /**
+   * 显示消息通知
+   */
+  const showNotification = useCallback((message: string) => {
+    setNotification(message)
+    if (notificationTimerRef.current) {
+      clearTimeout(notificationTimerRef.current)
     }
-    const timer = setTimeout(saveProgress, 1000)
-    return () => clearTimeout(timer)
-  }, [currentPage, comicId, totalPages])
+    notificationTimerRef.current = window.setTimeout(() => {
+      setNotification(null)
+    }, 2000)
+  }, [])
+
+  const handleSaveProgress = useCallback(async () => {
+    if (!comicId || totalPages === 0) {
+      showNotification('无法保存进度')
+      return
+    }
+    try {
+      await databaseService.saveReadingProgress(comicId, currentPage, totalPages)
+      showNotification(`进度已保存: 第 ${currentPage} 页`)
+    } catch (error) {
+      showNotification('保存进度失败')
+      console.error('保存阅读进度失败:', error)
+    }
+  }, [comicId, currentPage, totalPages, showNotification])
 
   /**
    * Scroll 模式按需加载：加载指定范围的页码
@@ -651,6 +672,14 @@ function ReaderView() {
 
   const handleClose = async () => {
     try {
+      // 关闭前自动保存阅读进度
+      if (comicId && totalPages > 0) {
+        try {
+          await databaseService.saveReadingProgress(comicId, currentPage, totalPages)
+        } catch (error) {
+          console.error('自动保存进度失败:', error)
+        }
+      }
       revokeAllBlobUrls()
       const currentWindow = getCurrentWindow()
       await currentWindow.close()
@@ -686,8 +715,11 @@ function ReaderView() {
     const savedPage = await restoreReadingProgress(mangaPath)
     if (savedPage > 1) {
       setCurrentPage(savedPage)
+      showNotification(`已恢复到第 ${savedPage} 页`)
+    } else {
+      showNotification('没有保存的进度')
     }
-  }, [mangaPath, restoreReadingProgress])
+  }, [mangaPath, restoreReadingProgress, showNotification])
 
   const handleDoublePrev = useCallback(() => {
     if (autoPage) setAutoPage(false)
@@ -764,9 +796,9 @@ function ReaderView() {
         if (prev >= totalPages) return prev
         return Math.min(totalPages, prev + step)
       })
-    }, autoPageInterval)
+    }, storeAutoPageInterval)
     return () => { if (autoPageRef.current) { clearInterval(autoPageRef.current); autoPageRef.current = null } }
-  }, [autoPage, autoPageInterval, readMode, totalPages])
+  }, [autoPage, storeAutoPageInterval, readMode, totalPages])
 
   useEffect(() => {
     if (readMode === 'scroll') return
@@ -790,12 +822,9 @@ function ReaderView() {
     return () => { window.removeEventListener('wheel', handleWheel); if (wheelTimer) clearTimeout(wheelTimer) }
   }, [handleDoublePrev, handleDoubleNext, zoomMode, readMode])
 
-  const cycleReadMode = () => {
-    const modes: ReadMode[] = ['single', 'double', 'scroll']
-    const currentIndex = modes.indexOf(readMode)
-    const nextMode = modes[(currentIndex + 1) % modes.length]
+  const setReadModeWithCleanup = (mode: ReadMode) => {
     pageRequestSequenceRef.current++
-    setReadMode(nextMode)
+    setReadMode(mode)
     setZoomMode(false)
     setDoublePageRight('')
   }
@@ -834,7 +863,7 @@ function ReaderView() {
 
   const resetPan = useCallback(() => { setPanOffset({ x: 0, y: 0 }) }, [])
 
-  const readModeLabels: Record<ReadMode, string> = { single: '单页', double: '双页', scroll: '滚动' }
+
 
   const imageStyle = {
     transform: getZoomTransform(),
@@ -842,7 +871,7 @@ function ReaderView() {
   }
 
   const renderSinglePage = () => (
-    <div className="flex-1 flex items-center justify-center p-4 overflow-auto relative">
+    <div className="flex-1 flex items-center justify-center p-4 overflow-auto relative group">
       {isLoading ? (
         <p className="text-text-secondary">加载中...</p>
       ) : currentImageSrc ? (
@@ -855,11 +884,29 @@ function ReaderView() {
           <p className="text-text-primary text-lg">暂无图片</p>
         </div>
       )}
+      {/* 左侧翻页按钮 - 始终垂直居中，鼠标靠近显示 */}
+      <button
+        onClick={handleDoublePrev}
+        disabled={currentPage === 1}
+        className="fixed left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+        title="上一页"
+      >
+        <RxChevronLeft className="w-6 h-6" />
+      </button>
+      {/* 右侧翻页按钮 - 始终垂直居中，鼠标靠近显示 */}
+      <button
+        onClick={handleDoubleNext}
+        disabled={currentPage >= totalPages || totalPages === 0}
+        className="fixed right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+        title="下一页"
+      >
+        <RxChevronRight className="w-6 h-6" />
+      </button>
     </div>
   )
 
   const renderDoublePage = () => (
-    <div className="flex-1 flex items-center justify-center p-4 overflow-auto gap-2 relative">
+    <div className="flex-1 flex items-center justify-center p-4 overflow-auto gap-2 relative group">
       {isLoading ? (
         <p className="text-text-secondary">加载中...</p>
       ) : (
@@ -882,8 +929,69 @@ function ReaderView() {
           )}
         </>
       )}
+      {/* 左侧翻页按钮 - 始终垂直居中，鼠标靠近显示 */}
+      <button
+        onClick={handleDoublePrev}
+        disabled={currentPage === 1}
+        className="fixed left-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+        title="上一页"
+      >
+        <RxChevronLeft className="w-6 h-6" />
+      </button>
+      {/* 右侧翻页按钮 - 始终垂直居中，鼠标靠近显示 */}
+      <button
+        onClick={handleDoubleNext}
+        disabled={currentPage >= totalPages || totalPages === 0}
+        className="fixed right-4 top-1/2 -translate-y-1/2 w-10 h-10 bg-bg-panel/80 hover:bg-bg-panel text-text-primary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0 z-10"
+        title="下一页"
+      >
+        <RxChevronRight className="w-6 h-6" />
+      </button>
     </div>
   )
+
+  /**
+   * 缩略图图片组件
+   */
+  const ThumbnailImage = ({ page, size }: { page: number; size: number }) => {
+    const [thumbUrl, setThumbUrl] = useState<string | null>(null)
+    const [loading, setLoading] = useState(true)
+
+    useEffect(() => {
+      let cancelled = false
+      const loadThumb = async () => {
+        try {
+          const url = await getPageUrl(page)
+          if (!cancelled && url) {
+            setThumbUrl(url)
+          }
+        } catch (e) {
+          // 忽略缩略图加载错误
+        } finally {
+          if (!cancelled) setLoading(false)
+        }
+      }
+      loadThumb()
+      return () => { cancelled = true }
+    }, [page])
+
+    if (loading) {
+      return <div className="w-full h-full bg-bg-hover animate-pulse" />
+    }
+
+    if (!thumbUrl) {
+      return <div className="w-full h-full bg-bg-hover flex items-center justify-center text-text-muted text-xs">{page}</div>
+    }
+
+    return (
+      <img
+        src={thumbUrl}
+        alt={`第 ${page} 页`}
+        className="w-full h-full object-cover"
+        loading="lazy"
+      />
+    )
+  }
 
   const renderScrollMode = () => {
     if (totalPages === 0) {
@@ -974,49 +1082,94 @@ function ReaderView() {
   return (
     <div className="h-full w-full bg-bg-main flex flex-col overflow-hidden">
       <div className="flex items-center justify-between p-2 bg-bg-panel border-b border-border-1">
-        <button onClick={handleClose} className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm">关闭</button>
-        <span className="text-text-primary text-sm font-medium">{mangaTitle}</span>
-        {readMode !== 'scroll' && totalPages > 0 && (
-          <span className="text-text-secondary text-sm">
-            {readMode === 'double' && doublePageRight ? `第 ${currentPage}-${currentPage + 1} / ${totalPages} 页` : `第 ${currentPage} / ${totalPages} 页`}
-          </span>
-        )}
-        {readMode !== 'scroll' && zoomMode && (
-          <span className="text-text-secondary text-sm">{zoomLevelState}%</span>
-        )}
-        <div className="flex gap-2">
-          <button onClick={cycleReadMode} className="px-3 py-1 bg-accent text-accent-text rounded text-sm font-medium hover:bg-accent-hover transition-colors">
-            {readModeLabels[readMode]}
+        {/* 左侧：消息通知区域 */}
+        <div className="flex items-center gap-2">
+          {notification && (
+            <span className="text-sm font-medium" style={{ color: '#CBE93A' }}>
+              {notification}
+            </span>
+          )}
+        </div>
+
+        <div className="flex gap-2 items-center">
+          {/* 滚动模式开关 */}
+          <button
+            onClick={() => setReadModeWithCleanup(readMode === 'scroll' ? 'single' : 'scroll')}
+            className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+              readMode === 'scroll'
+                ? 'bg-accent text-accent-text'
+                : 'bg-bg-input text-text-secondary border border-border-1 hover:text-text-primary'
+            }`}
+            title={readMode === 'scroll' ? '退出滚动模式' : '进入滚动模式'}
+          >
+            滚动
+          </button>
+          {/* 单页/双页滑块切换 */}
+          {readMode !== 'scroll' && (
+            <div
+              className="relative flex items-center w-24 h-7 bg-bg-input border border-border-1 rounded cursor-pointer select-none"
+              onClick={() => setReadModeWithCleanup(readMode === 'single' ? 'double' : 'single')}
+              title={readMode === 'single' ? '点击切换为双页' : '点击切换为单页'}
+            >
+              {/* 滑块背景 */}
+              <div
+                className="absolute top-0.5 bottom-0.5 w-1/2 bg-accent rounded transition-all duration-200"
+                style={{ left: readMode === 'single' ? '2px' : 'calc(50% - 2px)' }}
+              />
+              {/* 文字层 */}
+              <span className={`relative z-10 w-1/2 text-center text-xs font-medium transition-colors ${
+                readMode === 'single' ? 'text-accent-text' : 'text-text-secondary'
+              }`}>
+                单页
+              </span>
+              <span className={`relative z-10 w-1/2 text-center text-xs font-medium transition-colors ${
+                readMode === 'double' ? 'text-accent-text' : 'text-text-secondary'
+              }`}>
+                双页
+              </span>
+            </div>
+          )}
+          <button onClick={handleSaveProgress}
+            className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm"
+            title="保存当前阅读进度">
+            保存进度
           </button>
           <button onClick={handleRestoreProgress}
             className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm"
-            title="恢复上次阅读进度">
+            title="恢复上次保存的阅读进度">
             恢复进度
           </button>
           {readMode !== 'scroll' && (
             <button onClick={() => setAutoPage(!autoPage)}
-              className={`px-3 py-1 rounded text-sm transition-colors ${autoPage ? 'bg-accent text-accent-text font-medium' : 'bg-bg-hover hover:bg-toolbar-hover text-text-primary'}`}>
-              {autoPage ? '自动关' : '自动开'}
+              className={`px-2 py-1 rounded text-sm transition-colors flex items-center justify-center ${autoPage ? 'bg-accent text-accent-text font-medium' : 'bg-bg-hover hover:bg-toolbar-hover text-text-primary'}`}
+              title={autoPage ? '停止自动翻页' : '开始自动翻页'}>
+              {autoPage ? (
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="4" width="4" height="16" rx="1" />
+                  <rect x="14" y="4" width="4" height="16" rx="1" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              )}
             </button>
           )}
-          {autoPage && readMode !== 'scroll' && (
-            <div className="flex items-center gap-1">
-              <button onClick={() => setAutoPageInterval(prev => Math.max(500, prev - 500))} className="px-2 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-xs">-</button>
-              <span className="text-text-secondary text-xs min-w-[40px] text-center">{(autoPageInterval / 1000).toFixed(1)}s</span>
-              <button onClick={() => setAutoPageInterval(prev => Math.min(10000, prev + 500))} className="px-2 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-xs">+</button>
-            </div>
-          )}
+
           {readMode !== 'scroll' && (
             <button onClick={() => { setZoomMode(!zoomMode); if (!zoomMode) { setZoomLevelState(100); resetPan() } }}
               className={`px-3 py-1 rounded text-sm transition-colors ${zoomMode ? 'bg-accent text-accent-text font-medium' : 'bg-bg-hover hover:bg-toolbar-hover text-text-primary'}`}>
-              {zoomMode ? '缩放开' : '缩放关'}
+              滚轮缩放
             </button>
           )}
           {readMode !== 'scroll' && zoomMode && (
             <>
               <button onClick={() => { setZoomLevelState(100); resetPan() }}
-                className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm">
-                适应窗口
+                className="px-2 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm flex items-center justify-center"
+                title="适应窗口">
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+                </svg>
               </button>
               <input
                 type="range"
@@ -1031,19 +1184,149 @@ function ReaderView() {
               <span className="text-text-secondary text-sm min-w-[45px]">{zoomLevelState}%</span>
             </>
           )}
+          {/* 缩略图按钮 */}
+          <button
+            onClick={() => setShowThumbnailPanel(!showThumbnailPanel)}
+            className={`px-3 py-1 rounded text-sm transition-colors ${showThumbnailPanel ? 'bg-accent text-accent-text font-medium' : 'bg-bg-hover hover:bg-toolbar-hover text-text-primary'}`}
+            title="缩略图面板"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* 主阅读区域 */}
+        <div className="flex-1 overflow-hidden">
+          {readMode === 'single' && renderSinglePage()}
+          {readMode === 'double' && renderDoublePage()}
+          {readMode === 'scroll' && renderScrollMode()}
+        </div>
+
+        {/* 缩略图面板 */}
+        {showThumbnailPanel && (
+          <>
+            <div
+              className="flex-shrink-0 bg-bg-panel border-l border-border-1 flex flex-col overflow-hidden"
+              style={{ width: thumbnailPanelWidth }}
+            >
+              <div className="p-2 border-b border-border-1 flex items-center justify-between">
+                <span className="text-text-primary text-xs font-medium">缩略图</span>
+                <button onClick={() => setShowThumbnailPanel(false)} className="text-text-muted hover:text-text-primary">
+                  <RxCross2 className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-2 border-b border-border-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-text-muted text-xs">大小</span>
+                  <input
+                    type="range"
+                    min="60"
+                    max="200"
+                    value={thumbnailSize}
+                    onChange={(e) => setThumbnailSize(Number(e.target.value))}
+                    className="flex-1 accent-accent"
+                  />
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-2">
+                <div className="flex flex-wrap gap-1 justify-center">
+                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
+                    <button
+                      key={page}
+                      onClick={() => {
+                        setCurrentPage(page)
+                        if (readMode === 'scroll') {
+                          scrollContainerRef.current?.scrollTo({ top: (page - 1) * estimatedPageHeight.current, behavior: 'smooth' })
+                        }
+                      }}
+                      className={`relative rounded overflow-hidden border-2 transition-colors ${
+                        page === currentPage ? 'border-accent' : 'border-transparent hover:border-border-2'
+                      }`}
+                      style={{ width: thumbnailSize, height: thumbnailSize * 1.4 }}
+                      title={`第 ${page} 页`}
+                    >
+                      <ThumbnailImage page={page} size={thumbnailSize} />
+                      <span className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] text-center py-0.5">
+                        {page}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            {/* 缩略图面板宽度调整手柄 */}
+            <div
+              className="w-1 cursor-col-resize hover:bg-accent/50 transition-colors flex-shrink-0"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                const startX = e.clientX
+                const startWidth = thumbnailPanelWidth
+                const handleMouseMove = (moveEvent: MouseEvent) => {
+                  const delta = startX - moveEvent.clientX
+                  const newWidth = Math.max(120, Math.min(400, startWidth + delta))
+                  setThumbnailPanelWidth(newWidth)
+                }
+                const handleMouseUp = () => {
+                  document.removeEventListener('mousemove', handleMouseMove)
+                  document.removeEventListener('mouseup', handleMouseUp)
+                }
+                document.addEventListener('mousemove', handleMouseMove)
+                document.addEventListener('mouseup', handleMouseUp)
+              }}
+            />
+          </>
+        )}
+      </div>
+
+      {/* 底部页面滑动条 - 参考WPF ReaderView样式 */}
+      {readMode !== 'scroll' && totalPages > 0 && (
+        <div
+          className="flex-shrink-0 flex items-center gap-3 px-3 select-none"
+          style={{ height: '32px', backgroundColor: '#212121', borderTop: '1px solid #2E2E2E' }}
+        >
+          <span style={{ fontSize: '12px', color: '#707070', fontWeight: 500, minWidth: '20px' }}>1</span>
+          <input
+            type="range"
+            min={1}
+            max={totalPages}
+            value={currentPage}
+            onChange={(e) => {
+              const page = Number(e.target.value)
+              setCurrentPage(page)
+            }}
+            className="page-slider flex-1"
+            style={{ '--slider-fill': `${((currentPage - 1) / (totalPages - 1)) * 100}%` } as React.CSSProperties}
+          />
+          <span style={{ fontSize: '12px', color: '#707070', fontWeight: 500, minWidth: '20px' }}>{totalPages}</span>
+        </div>
+      )}
+
+      {/* 底部页面信息栏 - 参考WPF样式 */}
+      <div
+        className="flex-shrink-0 flex items-center select-none"
+        style={{ height: '32px', backgroundColor: '#212121', borderTop: '1px solid #2E2E2E' }}
+      >
+        <div className="flex-1 px-3">
+          <span style={{ fontSize: '11px', color: '#505050' }}>
+            {readMode === 'scroll' ? '滚动模式' : zoomMode ? `缩放: ${zoomLevelState}%` : '适应窗口'}
+          </span>
+        </div>
+        <div className="flex items-center">
+          <span style={{ fontSize: '14px', color: '#D0D0D0' }}>{currentPage}</span>
+          <span style={{ fontSize: '14px', color: '#505050', margin: '0 4px' }}>/</span>
+          <span style={{ fontSize: '14px', color: '#D0D0D0' }}>{totalPages}</span>
+        </div>
+        <div className="flex-1 px-3 text-right">
           {readMode !== 'scroll' && (
-            <button onClick={handleDoublePrev} disabled={currentPage === 1}
-              className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm disabled:opacity-50">上一页</button>
-          )}
-          {readMode !== 'scroll' && (
-            <button onClick={handleDoubleNext} disabled={currentPage >= totalPages || totalPages === 0}
-              className="px-3 py-1 bg-bg-hover hover:bg-toolbar-hover rounded text-text-primary text-sm disabled:opacity-50">下一页</button>
+            <span style={{ fontSize: '11px', color: '#505050' }}>
+              {zoomMode ? '自定义缩放' : '适应窗口'}
+            </span>
           )}
         </div>
       </div>
-      {readMode === 'single' && renderSinglePage()}
-      {readMode === 'double' && renderDoublePage()}
-      {readMode === 'scroll' && renderScrollMode()}
 
       {/* Error Toast */}
       {errorToast && (

@@ -96,3 +96,54 @@ input.zoom-slider::-moz-range-thumb {
   border: 2px solid #1A1A1A;
   cursor: pointer;
 }
+
+/* 页面滑动条样式 - 参考WPF ReaderView */
+input.page-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+}
+
+input.page-slider::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, #CBE93A var(--slider-fill, 0%), #2A2A2A var(--slider-fill, 0%));
+}
+
+input.page-slider::-moz-range-track {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, #CBE93A var(--slider-fill, 0%), #2A2A2A var(--slider-fill, 0%));
+}
+
+input.page-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #CBE93A;
+  border: none;
+  margin-top: -5px;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+input.page-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 4px rgba(203, 233, 58, 0.2);
+}
+
+input.page-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #CBE93A;
+  border: none;
+  cursor: pointer;
+}

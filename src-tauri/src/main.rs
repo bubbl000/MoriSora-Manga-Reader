@@ -3,6 +3,7 @@
 mod sort_utils;
 mod archive_cache;
 mod archive_parser;
+mod cover_cache;
 mod database;
 mod events;
 mod file_operations;
@@ -290,6 +291,34 @@ fn move_folder(source_path: String, target_parent_path: String) -> Result<String
 }
 
 #[tauri::command]
+async fn generate_cover_thumbnail(path: String) -> Result<Vec<u8>, String> {
+    // 1. 先检查是否有磁盘缓存
+    if cover_cache::has_cached_cover(&path) {
+        if let Ok(bytes) = cover_cache::read_cached_cover_bytes(&path) {
+            return Ok(bytes);
+        }
+    }
+
+    // 2. 没有缓存则实时生成并缓存
+    let path_clone = path.clone();
+    let thumbnail_data = tokio::task::spawn_blocking(move || {
+        archive_parser::generate_cover_thumbnail(&path_clone)
+    }).await.unwrap()?;
+
+    // 3. 保存到磁盘缓存
+    if let Ok(cache_path) = cover_cache::generate_and_cache_cover(&path, &thumbnail_data) {
+        eprintln!("[封面缓存] 已保存: {:?}", cache_path);
+    }
+
+    Ok(thumbnail_data)
+}
+
+#[tauri::command]
+fn clear_cover_cache() -> Result<(), String> {
+    cover_cache::clear_cover_cache()
+}
+
+#[tauri::command]
 fn get_all_subfolders(root_path: String) -> Result<Vec<String>, String> {
     fn collect_folders(
         dir: &Path,
@@ -373,6 +402,8 @@ fn main() {
             read_image_bytes,
             get_archive_images,
             get_archive_image_bytes,
+            generate_cover_thumbnail,
+            clear_cover_cache,
             load_settings,
             save_settings,
             add_library_path,

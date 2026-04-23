@@ -8,8 +8,10 @@ interface SettingsDialogProps {
 }
 
 function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
-  const { libraryPaths, addLibraryPath, removeLibraryPath, scanAndLoad, isScanning } = useMangaStore()
+  const { libraryPaths, addLibraryPath, removeLibraryPath, scanAndLoad, isScanning, pageSize, setPageSize, autoPageInterval, setAutoPageInterval } = useMangaStore()
   const [newPath, setNewPath] = useState('')
+  const [pageSizeInput, setPageSizeInput] = useState(String(pageSize))
+  const [autoPageIntervalInput, setAutoPageIntervalInput] = useState(String(autoPageInterval / 1000))
 
   const handleSelectFolder = async () => {
     try {
@@ -120,6 +122,77 @@ function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
             {isScanning && (
               <p className="text-accent text-sm mt-2">正在扫描...</p>
             )}
+          </div>
+
+          <div className="mb-6">
+            <h3 className="text-sm font-medium text-text-primary mb-3">分页设置</h3>
+            <div className="flex items-center gap-3">
+              <label className="text-text-secondary text-sm whitespace-nowrap">每页卡片数量</label>
+              <input
+                type="number"
+                min="1"
+                max="500"
+                value={pageSizeInput}
+                onChange={(e) => setPageSizeInput(e.target.value)}
+                onBlur={() => {
+                  const size = parseInt(pageSizeInput, 10)
+                  if (!isNaN(size) && size >= 1 && size <= 500) {
+                    setPageSize(size)
+                  } else {
+                    setPageSizeInput(String(pageSize))
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const size = parseInt(pageSizeInput, 10)
+                    if (!isNaN(size) && size >= 1 && size <= 500) {
+                      setPageSize(size)
+                    } else {
+                      setPageSizeInput(String(pageSize))
+                    }
+                  }
+                }}
+                className="w-20 px-3 py-2 bg-bg-input border border-border-1 rounded text-text-primary text-sm focus:outline-none focus:border-accent text-center"
+              />
+              <span className="text-text-muted text-xs">范围 1-500</span>
+            </div>
+          </div>
+
+          <div className="mb-6">
+            <h3 className="text-sm font-medium text-text-primary mb-3">阅读器设置</h3>
+            <div className="flex items-center gap-3">
+              <label className="text-text-secondary text-sm whitespace-nowrap">自动播放速度</label>
+              <input
+                type="number"
+                min="0.5"
+                max="60"
+                step="0.5"
+                value={autoPageIntervalInput}
+                onChange={(e) => setAutoPageIntervalInput(e.target.value)}
+                onBlur={() => {
+                  const seconds = parseFloat(autoPageIntervalInput)
+                  if (!isNaN(seconds) && seconds >= 0.5 && seconds <= 60) {
+                    setAutoPageInterval(Math.round(seconds * 1000))
+                    setAutoPageIntervalInput(String(seconds))
+                  } else {
+                    setAutoPageIntervalInput(String(autoPageInterval / 1000))
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const seconds = parseFloat(autoPageIntervalInput)
+                    if (!isNaN(seconds) && seconds >= 0.5 && seconds <= 60) {
+                      setAutoPageInterval(Math.round(seconds * 1000))
+                      setAutoPageIntervalInput(String(seconds))
+                    } else {
+                      setAutoPageIntervalInput(String(autoPageInterval / 1000))
+                    }
+                  }
+                }}
+                className="w-20 px-3 py-2 bg-bg-input border border-border-1 rounded text-text-primary text-sm focus:outline-none focus:border-accent text-center"
+              />
+              <span className="text-text-muted text-xs">秒/页 (范围 0.5-60)</span>
+            </div>
           </div>
         </div>
 
